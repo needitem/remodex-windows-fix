@@ -9,6 +9,8 @@ Windows-friendly mirror of `remodex` with a launcher fix for `codex app-server`.
 - Falls back to `codex.exe` when a wrapper script is not present.
 - Adds `REMODEX_CODEX_BIN` and `PHODEX_CODEX_BIN` overrides for explicit Codex binary selection.
 - Prevents immediate uncaught startup crashes by routing launcher failures through Remodex error handling.
+- Shrinks mobile-visible workspace paths to the last folder name only, so `\\?\C:\Users\...\autostock` renders as `autostock`.
+- Resolves that shortened folder label back to the real local directory for git actions, so the mobile UI stays compact without breaking local execution.
 
 ## Why This Exists
 
@@ -70,6 +72,12 @@ Expected Windows resolution after the fix:
 
 ```text
 C:\Users\th072\AppData\Roaming\npm\codex.cmd app-server
+```
+
+Expected mobile workspace label after the path display fix:
+
+```text
+autostock
 ```
 
 ## Project Layout

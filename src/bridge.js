@@ -11,6 +11,7 @@ const {
   readBridgeConfig,
 } = require("./codex-desktop-refresher");
 const { createCodexTransport } = require("./codex-transport");
+const { sanitizeMessageForPhone } = require("./display-paths");
 const { printQR } = require("./qr");
 const { rememberActiveThread } = require("./session-state");
 const { handleGitRequest } = require("./git-handler");
@@ -156,10 +157,11 @@ function startBridge() {
     trackCodexHandshakeState(message);
     desktopRefresher.handleOutbound(message);
     rememberThreadFromMessage("codex", message);
+    const outboundMessage = sanitizeMessageForPhone(message);
     if (socket?.readyState === WebSocket.OPEN) {
-      socket.send(message);
+      socket.send(outboundMessage);
     } else {
-      pendingCodexMessages.push(message);
+      pendingCodexMessages.push(outboundMessage);
     }
   });
 

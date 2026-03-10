@@ -7,6 +7,7 @@
 const { execFile } = require("child_process");
 const fs = require("fs");
 const { promisify } = require("util");
+const { resolveDisplayPath } = require("./display-paths");
 
 const execFileAsync = promisify(execFile);
 const GIT_TIMEOUT_MS = 30_000;
@@ -578,14 +579,16 @@ async function resolveGitCwd(params) {
     );
   }
 
-  if (!isExistingDirectory(requestedCwd)) {
+  const resolvedCwd = resolveDisplayPath(requestedCwd);
+
+  if (!isExistingDirectory(resolvedCwd)) {
     throw gitError(
       "missing_working_directory",
       "The requested local working directory does not exist on this Mac."
     );
   }
 
-  return requestedCwd;
+  return resolvedCwd;
 }
 
 function firstNonEmptyString(candidates) {
