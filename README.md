@@ -120,6 +120,13 @@ $env:REMODEX_RELAY = "wss://remodex-relay.th07290828.workers.dev/relay"
 remodex up
 ```
 
+If you are using `cmd.exe` instead of PowerShell:
+
+```cmd
+set REMODEX_RELAY=wss://remodex-relay.th07290828.workers.dev/relay
+remodex up
+```
+
 Health check:
 
 ```text
