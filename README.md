@@ -98,6 +98,8 @@ GET /health
 
 GitHub itself does not host persistent WebSocket servers for this use case. The practical path is:
 
+[\!\[Deploy to Render\]\(https://render.com/images/deploy-to-render-button.svg\)]\(https://render.com/deploy?repo=https://github.com/needitem/remodex-windows-fix\)
+
 1. Push this repository to GitHub.
 2. Create a new Render Web Service from that repository.
 3. Render will detect the included [render.yaml](render.yaml) and run the relay as a public service.
