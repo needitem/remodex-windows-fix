@@ -4,14 +4,17 @@
   "description": "Local bridge between Codex and the Remodex mobile app with a Windows-safe Codex launcher.",
   "main": "src/index.js",
   "bin": {
-    "remodex": "./bin/remodex.js"
+    "remodex": "./bin/remodex.js",
+    "remodex-relay": "./bin/remodex-relay.js"
   },
   "files": [
     "bin/",
+    "relay/",
     "src/"
   ],
   "scripts": {
-    "start": "node ./bin/remodex.js up"
+    "start": "node ./bin/remodex.js up",
+    "relay": "node ./bin/remodex-relay.js"
   },
   "keywords": [
     "remodex",

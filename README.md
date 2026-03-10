@@ -56,6 +56,60 @@ Legacy alias:
 $env:PHODEX_CODEX_BIN = "C:\Users\th072\AppData\Roaming\npm\codex.cmd"
 ```
 
+## Self-Hosted Relay
+
+This repository now includes the upstream-compatible relay code and a local runner.
+
+Start your own relay:
+
+```bash
+npm run relay
+```
+
+Or use the bundled binary directly:
+
+```bash
+remodex-relay
+```
+
+Optional relay host/port overrides:
+
+```powershell
+$env:REMODEX_RELAY_HOST = "0.0.0.0"
+$env:REMODEX_RELAY_PORT = "9000"
+```
+
+Point the bridge at your relay:
+
+```powershell
+$env:REMODEX_RELAY = "ws://YOUR_HOST:9000/relay"
+remodex up
+```
+
+For TLS/reverse-proxy setups, use the public `wss://YOUR_DOMAIN/relay` URL instead.
+
+Health endpoint:
+
+```text
+GET /health
+```
+
+## Deploy From GitHub
+
+GitHub itself does not host persistent WebSocket servers for this use case. The practical path is:
+
+1. Push this repository to GitHub.
+2. Create a new Render Web Service from that repository.
+3. Render will detect the included [render.yaml](render.yaml) and run the relay as a public service.
+4. After deploy, use your Render URL as the relay base:
+
+```powershell
+$env:REMODEX_RELAY = "wss://YOUR-SERVICE.onrender.com/relay"
+remodex up
+```
+
+The bundled relay listens on `PORT` automatically for Render-compatible hosting.
+
 ## Validation
 
 Typical local verification:

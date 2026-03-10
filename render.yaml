@@ -1,0 +1,10 @@
+services:
+  - type: web
+    runtime: node
+    name: remodex-relay
+    buildCommand: npm install
+    startCommand: npm run relay
+    healthCheckPath: /health
+    envVars:
+      - key: REMODEX_RELAY_HOST
+        value: 0.0.0.0

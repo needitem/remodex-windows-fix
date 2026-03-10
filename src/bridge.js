@@ -136,7 +136,7 @@ function startBridge() {
       if (handleBridgeManagedHandshakeMessage(normalizedMessage, nextSocket)) {
         return;
       }
-      if (handleGitRequest(normalizedMessage, (r) => nextSocket.send(r))) {
+      if (handleGitRequest(normalizedMessage, (response) => nextSocket.send(response))) {
         return;
       }
       desktopRefresher.handleInbound(normalizedMessage);
