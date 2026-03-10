@@ -16,10 +16,10 @@ On Windows, `codex` is often installed through npm as a `.cmd` shim. A plain Nod
 
 ## Install
 
-Install from this GitHub repository:
+Install from npm:
 
 ```bash
-npm install -g github:needitem/remodex-windows-fix
+npm install -g remodex-windows-fix
 ```
 
 Global CLI command:
@@ -89,7 +89,7 @@ Point the bridge at your relay:
 
 ```powershell
 $env:REMODEX_RELAY = "ws://YOUR_HOST:9000/relay"
-remodex up
+remodex-windows-fix up
 ```
 
 For TLS/reverse-proxy setups, use the public `wss://YOUR_DOMAIN/relay` URL instead.
@@ -174,7 +174,10 @@ C:\Users\th072\AppData\Roaming\npm\codex.cmd app-server
 
 ```text
 bin/
+cloudflare/
+relay/
 src/
+wrangler.toml
 package.json
 ```
 
