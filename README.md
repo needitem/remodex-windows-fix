@@ -113,6 +113,19 @@ $env:REMODEX_RELAY = "wss://YOUR-WORKER.YOUR-SUBDOMAIN.workers.dev/relay"
 remodex up
 ```
 
+Current deployed example for this repository:
+
+```powershell
+$env:REMODEX_RELAY = "wss://remodex-relay.th07290828.workers.dev/relay"
+remodex up
+```
+
+Health check:
+
+```text
+https://remodex-relay.th07290828.workers.dev/health
+```
+
 Cloudflare health endpoint:
 
 ```text
