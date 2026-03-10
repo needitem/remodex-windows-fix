@@ -7,6 +7,7 @@
 const { execFile } = require("child_process");
 const fs = require("fs");
 const { promisify } = require("util");
+const { registerWorkspacePath, resolveWorkspacePath } = require("./workspace-paths");
 
 const execFileAsync = promisify(execFile);
 const GIT_TIMEOUT_MS = 30_000;
@@ -570,22 +571,24 @@ function gitError(errorCode, userMessage) {
 // Resolves git commands to a concrete local directory.
 async function resolveGitCwd(params) {
   const requestedCwd = firstNonEmptyString([params.cwd, params.currentWorkingDirectory]);
+  const resolvedCwd = resolveWorkspacePath(requestedCwd);
 
-  if (!requestedCwd) {
+  if (!resolvedCwd) {
     throw gitError(
       "missing_working_directory",
       "Git actions require a bound local working directory."
     );
   }
 
-  if (!isExistingDirectory(requestedCwd)) {
+  if (!isExistingDirectory(resolvedCwd)) {
     throw gitError(
       "missing_working_directory",
       "The requested local working directory does not exist on this Mac."
     );
   }
 
-  return requestedCwd;
+  registerWorkspacePath(resolvedCwd);
+  return resolvedCwd;
 }
 
 function firstNonEmptyString(candidates) {

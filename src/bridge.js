@@ -11,12 +11,19 @@ const {
   readBridgeConfig,
 } = require("./codex-desktop-refresher");
 const { createCodexTransport } = require("./codex-transport");
+const {
+  registerWorkspacePath,
+  registerWorkspacePathsFromMessage,
+  restoreWorkspacePathsFromDisplay,
+  rewriteWorkspacePathsForDisplay,
+} = require("./workspace-paths");
 const { printQR } = require("./qr");
 const { rememberActiveThread } = require("./session-state");
 const { handleGitRequest } = require("./git-handler");
 
 function startBridge() {
   const config = readBridgeConfig();
+  registerWorkspacePath(process.cwd());
   const sessionId = uuidv4();
   const relayBaseUrl = config.relayUrl.replace(/\/+$/, "");
   const relaySessionUrl = `${relayBaseUrl}/${sessionId}`;
@@ -125,15 +132,16 @@ function startBridge() {
 
     nextSocket.on("message", (data) => {
       const message = typeof data === "string" ? data : data.toString("utf8");
-      if (handleBridgeManagedHandshakeMessage(message, nextSocket)) {
+      const normalizedMessage = restoreWorkspacePathsFromDisplay(message);
+      if (handleBridgeManagedHandshakeMessage(normalizedMessage, nextSocket)) {
         return;
       }
-      if (handleGitRequest(message, (r) => nextSocket.send(r))) {
+      if (handleGitRequest(normalizedMessage, (r) => nextSocket.send(r))) {
         return;
       }
-      desktopRefresher.handleInbound(message);
-      rememberThreadFromMessage("phone", message);
-      codex.send(message);
+      desktopRefresher.handleInbound(normalizedMessage);
+      rememberThreadFromMessage("phone", normalizedMessage);
+      codex.send(normalizedMessage);
     });
 
     nextSocket.on("close", (code) => {
@@ -156,10 +164,12 @@ function startBridge() {
     trackCodexHandshakeState(message);
     desktopRefresher.handleOutbound(message);
     rememberThreadFromMessage("codex", message);
+    registerWorkspacePathsFromMessage(message);
+    const forwardedMessage = rewriteWorkspacePathsForDisplay(message);
     if (socket?.readyState === WebSocket.OPEN) {
-      socket.send(message);
+      socket.send(forwardedMessage);
     } else {
-      pendingCodexMessages.push(message);
+      pendingCodexMessages.push(forwardedMessage);
     }
   });
 
