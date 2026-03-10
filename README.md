@@ -94,23 +94,39 @@ Health endpoint:
 GET /health
 ```
 
-## Deploy From GitHub
+## Cloudflare Deploy
 
-GitHub itself does not host persistent WebSocket servers for this use case. The practical path is:
+This repository also includes a Cloudflare Workers relay implementation in [cloudflare/worker.mjs](cloudflare/worker.mjs) with Durable Objects configured in [wrangler.toml](wrangler.toml).
 
-[\!\[Deploy to Render\]\(https://render.com/images/deploy-to-render-button.svg\)]\(https://render.com/deploy?repo=https://github.com/needitem/remodex-windows-fix\)
+GitHub itself still does not host persistent WebSocket servers, but Cloudflare Workers can deploy this relay directly from your GitHub repository without running anything locally.
 
-1. Push this repository to GitHub.
-2. Create a new Render Web Service from that repository.
-3. Render will detect the included [render.yaml](render.yaml) and run the relay as a public service.
-4. After deploy, use your Render URL as the relay base:
+Import this repository in Cloudflare:
+
+1. Open Cloudflare Workers & Pages.
+2. Create or import a Worker from your GitHub repository.
+3. Use the worker name `remodex-relay` so it matches [wrangler.toml](wrangler.toml).
+4. Deploy the repository as-is.
+5. After deploy, use the public Worker URL as the relay base:
+
+```powershell
+$env:REMODEX_RELAY = "wss://YOUR-WORKER.YOUR-SUBDOMAIN.workers.dev/relay"
+remodex up
+```
+
+Cloudflare health endpoint:
+
+```text
+GET /health
+```
+
+## Alternative GitHub Deploy
+
+If you prefer a normal Node web service instead of Workers, this repository still includes the Render-compatible runner in [render.yaml](render.yaml).
 
 ```powershell
 $env:REMODEX_RELAY = "wss://YOUR-SERVICE.onrender.com/relay"
 remodex up
 ```
-
-The bundled relay listens on `PORT` automatically for Render-compatible hosting.
 
 ## Validation
 
