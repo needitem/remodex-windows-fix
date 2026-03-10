@@ -1,16 +1,19 @@
 {
   "name": "remodex-windows-fix",
-  "version": "1.0.1",
+  "version": "1.0.2",
   "description": "Local bridge between Codex and the Remodex mobile app with a Windows-safe Codex launcher.",
   "main": "src/index.js",
   "bin": {
-    "remodex": "./bin/remodex.js",
-    "remodex-relay": "./bin/remodex-relay.js"
+    "remodex-windows-fix": "bin/remodex.js",
+    "remodex-relay": "bin/remodex-relay.js"
   },
   "files": [
     "bin/",
+    "cloudflare/",
     "relay/",
-    "src/"
+    "render.yaml",
+    "src/",
+    "wrangler.toml"
   ],
   "scripts": {
     "start": "node ./bin/remodex.js up",
@@ -26,9 +29,12 @@
   "author": "Emanuele Di Pietro",
   "license": "ISC",
   "type": "commonjs",
+  "publishConfig": {
+    "access": "public"
+  },
   "repository": {
     "type": "git",
-    "url": "https://github.com/needitem/remodex-windows-fix.git"
+    "url": "git+https://github.com/needitem/remodex-windows-fix.git"
   },
   "bugs": {
     "url": "https://github.com/needitem/remodex-windows-fix/issues"

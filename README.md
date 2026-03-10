@@ -22,24 +22,30 @@ Install from this GitHub repository:
 npm install -g github:needitem/remodex-windows-fix
 ```
 
+Global CLI command:
+
+```bash
+remodex-windows-fix
+```
+
 ## Usage
 
 Start the bridge:
 
 ```bash
-remodex up
+remodex-windows-fix up
 ```
 
 Resume the last active thread:
 
 ```bash
-remodex resume
+remodex-windows-fix resume
 ```
 
 Watch rollout output:
 
 ```bash
-remodex watch [threadId]
+remodex-windows-fix watch [threadId]
 ```
 
 ## Windows Override
@@ -110,21 +116,21 @@ Import this repository in Cloudflare:
 
 ```powershell
 $env:REMODEX_RELAY = "wss://YOUR-WORKER.YOUR-SUBDOMAIN.workers.dev/relay"
-remodex up
+remodex-windows-fix up
 ```
 
 Current deployed example for this repository:
 
 ```powershell
 $env:REMODEX_RELAY = "wss://remodex-relay.th07290828.workers.dev/relay"
-remodex up
+remodex-windows-fix up
 ```
 
 If you are using `cmd.exe` instead of PowerShell:
 
 ```cmd
 set REMODEX_RELAY=wss://remodex-relay.th07290828.workers.dev/relay
-remodex up
+remodex-windows-fix up
 ```
 
 Health check:
@@ -145,7 +151,7 @@ If you prefer a normal Node web service instead of Workers, this repository stil
 
 ```powershell
 $env:REMODEX_RELAY = "wss://YOUR-SERVICE.onrender.com/relay"
-remodex up
+remodex-windows-fix up
 ```
 
 ## Validation
@@ -155,7 +161,7 @@ Typical local verification:
 ```bash
 codex --version
 codex app-server --help
-remodex up
+remodex-windows-fix up
 ```
 
 Expected Windows resolution after the fix:
