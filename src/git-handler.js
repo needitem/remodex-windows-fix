@@ -1,8 +1,8 @@
 // FILE: git-handler.js
 // Purpose: Intercepts git/* JSON-RPC methods and executes git commands locally on the Mac.
 // Layer: Bridge handler
-// Exports: handleGitRequest
-// Depends on: child_process, fs
+// Exports: handleGitRequest, gitStatus
+// Depends on: child_process, fs, ./workspace-paths
 
 const { execFile } = require("child_process");
 const fs = require("fs");
@@ -63,6 +63,8 @@ async function handleGitMethod(method, params) {
   switch (method) {
     case "git/status":
       return gitStatus(cwd);
+    case "git/diff":
+      return gitDiff(cwd);
     case "git/commit":
       return gitCommit(cwd, params);
     case "git/push":
@@ -92,12 +94,11 @@ async function handleGitMethod(method, params) {
   }
 }
 
-// ─── Git Status ───────────────────────────────────────────────
-
 async function gitStatus(cwd) {
-  const [porcelain, branchInfo] = await Promise.all([
+  const [porcelain, branchInfo, repoRoot] = await Promise.all([
     git(cwd, "status", "--porcelain=v1", "-b"),
     revListCounts(cwd).catch(() => ({ ahead: 0, behind: 0 })),
+    resolveRepoRoot(cwd).catch(() => null),
   ]);
 
   const lines = porcelain.trim().split("\n").filter(Boolean);
@@ -122,10 +123,25 @@ async function gitStatus(cwd) {
     fileLines,
   }).catch(() => ({ additions: 0, deletions: 0, binaryFiles: 0 }));
 
-  return { branch, tracking, dirty, ahead, behind, state, canPush, files, diff };
+  return { repoRoot, branch, tracking, dirty, ahead, behind, state, canPush, files, diff };
 }
 
-// ─── Git Commit ───────────────────────────────────────────────
+async function gitDiff(cwd) {
+  const porcelain = await git(cwd, "status", "--porcelain=v1", "-b");
+  const lines = porcelain.trim().split("\n").filter(Boolean);
+  const branchLine = lines[0] || "";
+  const fileLines = lines.slice(1);
+  const tracking = parseTrackingFromStatus(branchLine);
+  const baseRef = await resolveRepoDiffBase(cwd, tracking);
+  const trackedPatch = await gitDiffAgainstBase(cwd, baseRef);
+  const untrackedPaths = fileLines
+    .filter((line) => line.startsWith("?? "))
+    .map((line) => line.substring(3).trim())
+    .filter(Boolean);
+  const untrackedPatch = await diffPatchForUntrackedFiles(cwd, untrackedPaths);
+  const patch = [trackedPatch.trim(), untrackedPatch.trim()].filter(Boolean).join("\n\n").trim();
+  return { patch };
+}
 
 async function gitCommit(cwd, params) {
   const message =
@@ -133,7 +149,6 @@ async function gitCommit(cwd, params) {
       ? params.message.trim()
       : "Changes from Codex";
 
-  // Check for changes first
   const statusCheck = await git(cwd, "status", "--porcelain");
   if (!statusCheck.trim()) {
     throw gitError("nothing_to_commit", "Nothing to commit.");
@@ -151,16 +166,13 @@ async function gitCommit(cwd, params) {
   return { hash, branch, summary };
 }
 
-// ─── Git Push ─────────────────────────────────────────────────
-
 async function gitPush(cwd) {
   try {
     const branchOutput = await git(cwd, "rev-parse", "--abbrev-ref", "HEAD");
     const branch = branchOutput.trim();
 
-    // Try normal push first; if no upstream, set it
     try {
-        await git(cwd, "push");
+      await git(cwd, "push");
     } catch (pushErr) {
       if (
         pushErr.message?.includes("no upstream") ||
@@ -176,7 +188,9 @@ async function gitPush(cwd) {
     const status = await gitStatus(cwd);
     return { branch, remote, status };
   } catch (err) {
-    if (err.errorCode) throw err;
+    if (err.errorCode) {
+      throw err;
+    }
     if (err.message?.includes("rejected")) {
       throw gitError("push_rejected", "Push rejected. Pull changes first.");
     }
@@ -184,26 +198,23 @@ async function gitPush(cwd) {
   }
 }
 
-// ─── Git Pull ─────────────────────────────────────────────────
-
 async function gitPull(cwd) {
   try {
     await git(cwd, "pull", "--rebase");
     const status = await gitStatus(cwd);
     return { success: true, status };
   } catch (err) {
-    // Abort rebase on conflict
     try {
       await git(cwd, "rebase", "--abort");
     } catch {
       // ignore abort errors
     }
-    if (err.errorCode) throw err;
+    if (err.errorCode) {
+      throw err;
+    }
     throw gitError("pull_conflict", "Pull failed due to conflicts. Rebase aborted.");
   }
 }
-
-// ─── Git Branches ─────────────────────────────────────────────
 
 async function gitBranches(cwd) {
   const output = await git(cwd, "branch", "-a", "--no-color");
@@ -211,7 +222,7 @@ async function gitBranches(cwd) {
     .trim()
     .split("\n")
     .filter(Boolean)
-    .map((l) => l.trim());
+    .map((line) => line.trim());
 
   let current = "";
   const branchSet = new Set();
@@ -221,12 +232,15 @@ async function gitBranches(cwd) {
     const name = line.replace(/^\*\s*/, "").trim();
 
     if (name.includes("HEAD detached") || name === "(no branch)") {
-      if (isCurrent) current = "HEAD";
+      if (isCurrent) {
+        current = "HEAD";
+      }
       continue;
     }
 
-    // Skip remotes/origin/HEAD -> ...
-    if (name.includes("->")) continue;
+    if (name.includes("->")) {
+      continue;
+    }
 
     if (name.startsWith("remotes/origin/")) {
       branchSet.add(name.replace("remotes/origin/", ""));
@@ -234,7 +248,9 @@ async function gitBranches(cwd) {
       branchSet.add(name);
     }
 
-    if (isCurrent) current = name;
+    if (isCurrent) {
+      current = name;
+    }
   }
 
   const branches = [...branchSet].sort();
@@ -242,8 +258,6 @@ async function gitBranches(cwd) {
 
   return { branches, current, default: defaultBranch };
 }
-
-// ─── Git Checkout ─────────────────────────────────────────────
 
 async function gitCheckout(cwd, params) {
   const branch = typeof params.branch === "string" ? params.branch.trim() : "";
@@ -266,8 +280,6 @@ async function gitCheckout(cwd, params) {
   const status = await gitStatus(cwd);
   return { current: branch, tracking: status.tracking, status };
 }
-
-// ─── Git Log ──────────────────────────────────────────────────
 
 async function gitLog(cwd) {
   const output = await git(
@@ -294,8 +306,6 @@ async function gitLog(cwd) {
   return { commits };
 }
 
-// ─── Git Create Branch ────────────────────────────────────────
-
 async function gitCreateBranch(cwd, params) {
   const name = typeof params.name === "string" ? params.name.trim() : "";
   if (!name) {
@@ -315,15 +325,11 @@ async function gitCreateBranch(cwd, params) {
   return { branch: name, status };
 }
 
-// ─── Git Stash ────────────────────────────────────────────────
-
 async function gitStash(cwd) {
   const output = await git(cwd, "stash");
   const saved = !output.includes("No local changes");
   return { success: saved, message: output.trim() };
 }
-
-// ─── Git Stash Pop ────────────────────────────────────────────
 
 async function gitStashPop(cwd) {
   try {
@@ -333,8 +339,6 @@ async function gitStashPop(cwd) {
     throw gitError("stash_pop_conflict", err.message || "Stash pop failed due to conflicts.");
   }
 }
-
-// ─── Git Reset to Remote ──────────────────────────────────────
 
 async function gitResetToRemote(cwd, params) {
   if (params.confirm !== "discard_runtime_changes") {
@@ -363,8 +367,6 @@ async function gitResetToRemote(cwd, params) {
   return { success: true, status };
 }
 
-// ─── Git Remote URL ───────────────────────────────────────────
-
 async function gitRemoteUrl(cwd) {
   const raw = (await git(cwd, "config", "--get", "remote.origin.url")).trim();
   const ownerRepo = parseOwnerRepo(raw);
@@ -376,8 +378,6 @@ function parseOwnerRepo(remoteUrl) {
   return match ? match[1] : null;
 }
 
-// ─── Git Branches With Status ─────────────────────────────────
-
 async function gitBranchesWithStatus(cwd) {
   const [branchResult, statusResult] = await Promise.all([
     gitBranches(cwd),
@@ -386,7 +386,6 @@ async function gitBranchesWithStatus(cwd) {
   return { ...branchResult, status: statusResult };
 }
 
-// Computes the local repo delta that still exists on this machine and is not on the remote.
 async function repoDiffTotals(cwd, context) {
   const baseRef = await resolveRepoDiffBase(cwd, context.tracking);
   const trackedTotals = await diffTotalsAgainstBase(cwd, baseRef);
@@ -403,7 +402,6 @@ async function repoDiffTotals(cwd, context) {
   };
 }
 
-// Uses upstream when available; otherwise falls back to commits not yet present on any remote.
 async function resolveRepoDiffBase(cwd, tracking) {
   if (tracking) {
     try {
@@ -434,6 +432,10 @@ async function resolveRepoDiffBase(cwd, tracking) {
 async function diffTotalsAgainstBase(cwd, baseRef) {
   const output = await git(cwd, "diff", "--numstat", baseRef);
   return parseNumstatTotals(output);
+}
+
+async function gitDiffAgainstBase(cwd, baseRef) {
+  return git(cwd, "diff", "--binary", "--find-renames", baseRef);
 }
 
 async function diffTotalsForUntrackedFiles(cwd, filePaths) {
@@ -497,7 +499,31 @@ async function gitDiffNoIndexNumstat(cwd, filePath) {
   }
 }
 
-// ─── Helpers ──────────────────────────────────────────────────
+async function diffPatchForUntrackedFiles(cwd, filePaths) {
+  if (!filePaths.length) {
+    return "";
+  }
+
+  const patches = await Promise.all(filePaths.map((filePath) => gitDiffNoIndexPatch(cwd, filePath)));
+  return patches.filter(Boolean).join("\n\n");
+}
+
+async function gitDiffNoIndexPatch(cwd, filePath) {
+  try {
+    const { stdout } = await execFileAsync(
+      "git",
+      ["diff", "--no-index", "--binary", "--", "/dev/null", filePath],
+      { cwd, timeout: GIT_TIMEOUT_MS }
+    );
+    return stdout;
+  } catch (err) {
+    if (typeof err?.code === "number" && err.code === 1) {
+      return err.stdout || "";
+    }
+    const msg = (err.stderr || err.message || "").trim();
+    throw new Error(msg || "git diff --no-index failed");
+  }
+}
 
 function git(cwd, ...args) {
   return execFileAsync("git", args, { cwd, timeout: GIT_TIMEOUT_MS })
@@ -519,11 +545,14 @@ async function revListCounts(cwd) {
 }
 
 function parseBranchFromStatus(line) {
-  // "## main...origin/main" or "## main" or "## HEAD (no branch)"
   const match = line.match(/^## (.+?)(?:\.{3}|$)/);
-  if (!match) return null;
+  if (!match) {
+    return null;
+  }
   const branch = match[1].trim();
-  if (branch === "HEAD (no branch)" || branch.includes("HEAD detached")) return null;
+  if (branch === "HEAD (no branch)" || branch.includes("HEAD detached")) {
+    return null;
+  }
   return branch;
 }
 
@@ -533,18 +562,31 @@ function parseTrackingFromStatus(line) {
 }
 
 function computeState(dirty, ahead, behind, detached, noUpstream) {
-  if (detached) return "detached_head";
-  if (noUpstream) return "no_upstream";
-  if (dirty && behind > 0) return "dirty_and_behind";
-  if (dirty) return "dirty";
-  if (ahead > 0 && behind > 0) return "diverged";
-  if (behind > 0) return "behind_only";
-  if (ahead > 0) return "ahead_only";
+  if (detached) {
+    return "detached_head";
+  }
+  if (noUpstream) {
+    return "no_upstream";
+  }
+  if (dirty && behind > 0) {
+    return "dirty_and_behind";
+  }
+  if (dirty) {
+    return "dirty";
+  }
+  if (ahead > 0 && behind > 0) {
+    return "diverged";
+  }
+  if (behind > 0) {
+    return "behind_only";
+  }
+  if (ahead > 0) {
+    return "ahead_only";
+  }
   return "up_to_date";
 }
 
 async function detectDefaultBranch(cwd, branches) {
-  // Try symbolic-ref first
   try {
     const ref = await git(cwd, "symbolic-ref", "refs/remotes/origin/HEAD");
     const defaultBranch = ref.trim().replace("refs/remotes/origin/", "");
@@ -555,9 +597,12 @@ async function detectDefaultBranch(cwd, branches) {
     // ignore
   }
 
-  // Fallback: prefer main, then master
-  if (branches.includes("main")) return "main";
-  if (branches.includes("master")) return "master";
+  if (branches.includes("main")) {
+    return "main";
+  }
+  if (branches.includes("master")) {
+    return "master";
+  }
   return branches[0] || null;
 }
 
@@ -568,7 +613,6 @@ function gitError(errorCode, userMessage) {
   return err;
 }
 
-// Resolves git commands to a concrete local directory.
 async function resolveGitCwd(params) {
   const requestedCwd = firstNonEmptyString([params.cwd, params.currentWorkingDirectory]);
   const resolvedCwd = resolveWorkspacePath(requestedCwd);
@@ -614,4 +658,10 @@ function isExistingDirectory(candidatePath) {
   }
 }
 
-module.exports = { handleGitRequest };
+async function resolveRepoRoot(cwd) {
+  const output = await git(cwd, "rev-parse", "--show-toplevel");
+  const repoRoot = output.trim();
+  return repoRoot || null;
+}
+
+module.exports = { handleGitRequest, gitStatus };

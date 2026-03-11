@@ -1,6 +1,5 @@
 import { DurableObject } from "cloudflare:workers";
 
-const MAX_HISTORY = 500;
 const CLOSE_CODE_INVALID_SESSION = 4000;
 const CLOSE_CODE_MAC_REPLACED = 4001;
 const CLOSE_CODE_SESSION_UNAVAILABLE = 4002;
@@ -36,19 +35,15 @@ export class SessionRelay extends DurableObject {
     this.env = env;
     this.mac = null;
     this.clients = new Set();
-    this.history = [];
 
-    this.ctx.blockConcurrencyWhile(async () => {
-      this.history = (await this.ctx.storage.get("history")) || [];
-      for (const socket of this.ctx.getWebSockets()) {
-        const metadata = socket.deserializeAttachment() || {};
-        if (metadata.role === "mac") {
-          this.mac = socket;
-        } else if (metadata.role === "iphone") {
-          this.clients.add(socket);
-        }
+    for (const socket of this.ctx.getWebSockets()) {
+      const metadata = socket.deserializeAttachment() || {};
+      if (metadata.role === "mac") {
+        this.mac = socket;
+      } else if (metadata.role === "iphone") {
+        this.clients.add(socket);
       }
-    });
+    }
   }
 
   async fetch(request) {
@@ -104,10 +99,6 @@ export class SessionRelay extends DurableObject {
       }
       this.clients = new Set([serverSocket]);
       console.log(`[relay] iPhone connected -> session ${sessionId} (1 client)`);
-
-      for (const msg of this.history) {
-        this.safeSend(serverSocket, msg);
-      }
     }
 
     return new Response(null, { status: 101, webSocket: clientSocket });
@@ -118,12 +109,6 @@ export class SessionRelay extends DurableObject {
     const text = normalizeMessage(message);
 
     if (metadata.role === "mac") {
-      this.history.push(text);
-      if (this.history.length > MAX_HISTORY) {
-        this.history.shift();
-      }
-      await this.ctx.storage.put("history", this.history);
-
       for (const client of this.clients) {
         this.safeSend(client, text);
       }
@@ -157,11 +142,6 @@ export class SessionRelay extends DurableObject {
       }
     } else if (metadata.role === "iphone") {
       this.clients.delete(socket);
-    }
-
-    if (!this.isSocketOpen(this.mac) && this.clients.size === 0) {
-      this.history = [];
-      await this.ctx.storage.deleteAll();
     }
   }
 
