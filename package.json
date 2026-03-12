@@ -1,6 +1,6 @@
 {
   "name": "remodex-windows-fix",
-  "version": "1.0.4",
+  "version": "1.0.5",
   "description": "Local bridge between Codex and the Remodex mobile app with a Windows-safe Codex launcher.",
   "main": "src/index.js",
   "bin": {
