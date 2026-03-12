@@ -6,7 +6,7 @@
 
 const path = require("path");
 
-const WORKSPACE_PATH_KEYS = new Set(["cwd", "currentWorkingDirectory", "repoRoot"]);
+const WORKSPACE_PATH_KEYS = new Set(["cwd", "currentWorkingDirectory", "repoRoot", "rolloutPath"]);
 const aliasToPath = new Map();
 const pathToAlias = new Map();
 
