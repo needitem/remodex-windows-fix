@@ -48,6 +48,31 @@ Watch rollout output:
 remodex-windows-fix watch [threadId]
 ```
 
+Get a fresh QR on Windows without stale pairing state:
+
+```bat
+run-clean-qr.bat
+```
+
+This helper:
+
+- stops any existing `remodex-windows-fix` bridge process
+- runs `reset-pairing`
+- starts a fresh bridge in a new PowerShell window
+- waits for `C:\Users\%USERNAME%\.remodex\pairing-qr.png` and opens it automatically
+
+It defaults to:
+
+```text
+wss://remodex-relay.th07290828.workers.dev/relay
+```
+
+You can also pass a custom relay URL:
+
+```bat
+run-clean-qr.bat wss://YOUR-RELAY/relay
+```
+
 ## Windows Override
 
 If you want to force a specific Codex binary, set one of these environment variables before running `remodex up`:
