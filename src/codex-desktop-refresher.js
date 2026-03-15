@@ -204,6 +204,11 @@ class CodexDesktopRefresher {
 function readBridgeConfig() {
   return {
     relayUrl: readFirstDefinedEnv(["REMODEX_RELAY", "PHODEX_RELAY"], "wss://api.phodex.app/relay"),
+    pushServiceUrl: readFirstDefinedEnv(["REMODEX_PUSH_SERVICE_URL"], ""),
+    pushPreviewMaxChars: parseIntegerEnv(
+      readFirstDefinedEnv(["REMODEX_PUSH_PREVIEW_MAX_CHARS"], "160"),
+      160
+    ),
     refreshEnabled: parseBooleanEnv(readFirstDefinedEnv(["REMODEX_REFRESH_ENABLED"], "false")),
     refreshDebounceMs: parseIntegerEnv(
       readFirstDefinedEnv(["REMODEX_REFRESH_DEBOUNCE_MS"], String(DEFAULT_DEBOUNCE_MS)),

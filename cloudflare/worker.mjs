@@ -35,6 +35,7 @@ export class SessionRelay extends DurableObject {
     this.env = env;
     this.mac = null;
     this.clients = new Set();
+    this.notificationSecret = null;
 
     for (const socket of this.ctx.getWebSockets()) {
       const metadata = socket.deserializeAttachment() || {};
@@ -77,6 +78,7 @@ export class SessionRelay extends DurableObject {
     serverSocket.serializeAttachment({ role });
 
     if (role === "mac") {
+      this.notificationSecret = readHeaderString(request.headers.get("x-notification-secret"));
       if (this.isSocketOpen(this.mac)) {
         this.safeClose(
           this.mac,
@@ -135,6 +137,7 @@ export class SessionRelay extends DurableObject {
     if (metadata.role === "mac") {
       if (this.mac === socket) {
         this.mac = null;
+        this.notificationSecret = null;
         for (const client of this.clients) {
           this.safeClose(client, CLOSE_CODE_SESSION_UNAVAILABLE, "Mac disconnected");
         }
@@ -188,6 +191,10 @@ function closeWebSocketResponse(code, reason) {
   serverSocket.accept();
   serverSocket.close(code, reason);
   return new Response(null, { status: 101, webSocket: clientSocket });
+}
+
+function readHeaderString(value) {
+  return typeof value === "string" && value.trim() ? value.trim() : null;
 }
 
 function jsonResponse(value) {

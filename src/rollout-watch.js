@@ -762,6 +762,7 @@ module.exports = {
   watchThreadRollout,
   createThreadRolloutActivityWatcher,
   contextUsageFromTokenCountPayload,
+  findRecentRolloutFileForContextRead,
   readLatestContextWindowUsage,
   resolveSessionsRoot,
   findRolloutFileForThread,

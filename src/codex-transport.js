@@ -40,11 +40,46 @@ function createSpawnTransport({ env }) {
   }
 
   let stdoutBuffer = "";
+  let stderrBuffer = "";
+  let didRequestShutdown = false;
+  let didReportError = false;
 
-  codex.on("error", (error) => listeners.emitError(normalizeSpawnError(error, spawnConfig)));
-  codex.on("close", (code, signal) => listeners.emitClose(code, signal));
-  // The bridge keeps stdout focused on connection state, so raw app-server logs stay muted here.
-  codex.stderr.on("data", () => {});
+  codex.on("error", (error) => {
+    didReportError = true;
+    listeners.emitError(normalizeSpawnError(error, spawnConfig));
+  });
+  codex.on("close", (code, signal) => {
+    if (!didRequestShutdown && !didReportError && code !== 0) {
+      didReportError = true;
+      listeners.emitError(createCodexCloseError({
+        code,
+        signal,
+        stderrBuffer,
+        launchDescription: spawnConfig.description,
+      }));
+      return;
+    }
+
+    listeners.emitClose(code, signal);
+  });
+  // Ignore broken-pipe shutdown noise once the child is already going away.
+  codex.stdin.on("error", (error) => {
+    if (didRequestShutdown && isIgnorableStdinShutdownError(error)) {
+      return;
+    }
+
+    if (isIgnorableStdinShutdownError(error)) {
+      return;
+    }
+
+    didReportError = true;
+    listeners.emitError(error);
+  });
+  // Keep stderr muted during normal operation, but preserve enough output to
+  // explain launch failures when the child exits before the bridge can use it.
+  codex.stderr.on("data", (chunk) => {
+    stderrBuffer = appendOutputBuffer(stderrBuffer, chunk.toString("utf8"));
+  });
 
   codex.stdout.on("data", (chunk) => {
     stdoutBuffer += chunk.toString("utf8");
@@ -65,7 +100,7 @@ function createSpawnTransport({ env }) {
       return spawnConfig.description;
     },
     send(message) {
-      if (!codex.stdin.writable) {
+      if (!codex.stdin.writable || codex.stdin.destroyed || codex.stdin.writableEnded) {
         return;
       }
 
@@ -81,9 +116,8 @@ function createSpawnTransport({ env }) {
       listeners.onError = handler;
     },
     shutdown() {
-      if (!codex.killed) {
-        codex.kill("SIGTERM");
-      }
+      didRequestShutdown = true;
+      shutdownCodexProcess(codex);
     },
   };
 }
@@ -208,6 +242,40 @@ function readFirstDefinedEnv(env, keys, fallback) {
   }
 
   return fallback;
+}
+
+function shutdownCodexProcess(codex) {
+  if (codex.killed || codex.exitCode !== null) {
+    return;
+  }
+
+  if (process.platform === "win32" && codex.pid) {
+    const killer = spawn("taskkill", ["/pid", String(codex.pid), "/t", "/f"], {
+      stdio: "ignore",
+      windowsHide: true,
+    });
+    killer.on("error", () => {
+      codex.kill();
+    });
+    return;
+  }
+
+  codex.kill("SIGTERM");
+}
+
+function createCodexCloseError({ code, signal, stderrBuffer, launchDescription }) {
+  const details = stderrBuffer.trim();
+  const reason = details || `Process exited with code ${code}${signal ? ` (signal: ${signal})` : ""}.`;
+  return new Error(`Codex launcher ${launchDescription} failed: ${reason}`);
+}
+
+function appendOutputBuffer(buffer, chunk) {
+  const next = `${buffer}${chunk}`;
+  return next.slice(-4_096);
+}
+
+function isIgnorableStdinShutdownError(error) {
+  return error?.code === "EPIPE" || error?.code === "ERR_STREAM_DESTROYED";
 }
 
 function createWebSocketTransport({ endpoint }) {

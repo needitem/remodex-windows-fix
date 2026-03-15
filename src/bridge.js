@@ -2,10 +2,10 @@
 // Purpose: Runs Codex locally, bridges relay traffic, and coordinates desktop refreshes for Codex.app.
 // Layer: CLI service
 // Exports: startBridge
-// Depends on: ws, uuid, ./qr, ./codex-desktop-refresher, ./codex-transport, ./rollout-watch
+// Depends on: ws, crypto, ./qr, ./codex-desktop-refresher, ./codex-transport, ./rollout-watch
 
 const WebSocket = require("ws");
-const { v4: uuidv4 } = require("uuid");
+const { randomBytes } = require("crypto");
 const {
   CodexDesktopRefresher,
   readBridgeConfig,
@@ -20,25 +20,61 @@ const {
 } = require("./workspace-paths");
 const { printQR } = require("./qr");
 const { rememberActiveThread } = require("./session-state");
+const { handleDesktopRequest } = require("./desktop-handler");
 const { handleGitRequest } = require("./git-handler");
 const { handleThreadContextRequest } = require("./thread-context-handler");
 const { handleWorkspaceRequest } = require("./workspace-handler");
-const { loadOrCreateBridgeDeviceState } = require("./secure-device-state");
+const { createNotificationsHandler } = require("./notifications-handler");
+const { createPushNotificationServiceClient } = require("./push-notification-service-client");
+const { createPushNotificationTracker } = require("./push-notification-tracker");
+const {
+  loadOrCreateBridgeDeviceState,
+  resolveBridgeRelaySession,
+} = require("./secure-device-state");
 const { createBridgeSecureTransport } = require("./secure-transport");
+const { createRolloutLiveMirrorController } = require("./rollout-live-mirror");
 
 function startBridge() {
   const config = readBridgeConfig();
   registerWorkspacePath(process.cwd());
-  const sessionId = uuidv4();
   const relayBaseUrl = config.relayUrl.replace(/\/+$/, "");
+  if (!relayBaseUrl) {
+    console.error("[remodex] No relay URL configured.");
+    console.error("[remodex] Set REMODEX_RELAY or PHODEX_RELAY before starting the bridge.");
+    process.exit(1);
+  }
+
+  let deviceState;
+  try {
+    deviceState = loadOrCreateBridgeDeviceState();
+  } catch (error) {
+    console.error(`[remodex] ${(error && error.message) || "Failed to load the saved bridge pairing state."}`);
+    process.exit(1);
+  }
+  const relaySession = resolveBridgeRelaySession(deviceState);
+  deviceState = relaySession.deviceState;
+  const sessionId = relaySession.sessionId;
   const relaySessionUrl = `${relayBaseUrl}/${sessionId}`;
-  const deviceState = loadOrCreateBridgeDeviceState();
+  const notificationSecret = randomBytes(24).toString("hex");
   const desktopRefresher = new CodexDesktopRefresher({
     enabled: config.refreshEnabled,
     debounceMs: config.refreshDebounceMs,
     refreshCommand: config.refreshCommand,
     bundleId: config.codexBundleId,
     appPath: config.codexAppPath,
+  });
+  const pushServiceClient = createPushNotificationServiceClient({
+    baseUrl: config.pushServiceUrl,
+    sessionId,
+    notificationSecret,
+  });
+  const notificationsHandler = createNotificationsHandler({
+    pushServiceClient,
+  });
+  const pushNotificationTracker = createPushNotificationTracker({
+    sessionId,
+    pushServiceClient,
+    previewMaxChars: config.pushPreviewMaxChars,
   });
 
   // Keep the local Codex runtime alive across transient relay disconnects.
@@ -47,7 +83,9 @@ function startBridge() {
   let reconnectAttempt = 0;
   let reconnectTimer = null;
   let lastConnectionStatus = null;
-  let codexHandshakeState = config.codexEndpoint ? "warm" : "cold";
+  // A freshly connected external Codex endpoint still needs a real initialize
+  // before it can serve thread/list or thread/start.
+  let codexHandshakeState = "cold";
   const forwardedInitializeRequestIds = new Set();
   const secureTransport = createBridgeSecureTransport({
     sessionId,
@@ -129,7 +167,11 @@ function startBridge() {
 
     logConnectionStatus("connecting");
     const nextSocket = new WebSocket(relaySessionUrl, {
-      headers: { "x-role": "mac" },
+      // The relay uses this per-session secret to authenticate the first push registration.
+      headers: {
+        "x-role": "mac",
+        "x-notification-secret": notificationSecret,
+      },
     });
     socket = nextSocket;
 
@@ -167,6 +209,7 @@ function startBridge() {
         socket = null;
       }
       stopContextUsageWatcher();
+      rolloutLiveMirror.stopAll();
       desktopRefresher.handleTransportReset?.();
       scheduleRelayReconnect(code);
     });
@@ -177,11 +220,13 @@ function startBridge() {
   }
 
   printQR(secureTransport.createPairingPayload());
+  pushServiceClient.logUnavailable();
   connectRelay();
 
   codex.onMessage((message) => {
     trackCodexHandshakeState(message);
     desktopRefresher.handleOutbound(message);
+    pushNotificationTracker.handleOutbound(message);
     rememberThreadFromMessage("codex", message);
     registerWorkspacePathsFromMessage(message);
     const forwardedMessage = rewriteWorkspacePathsForDisplay(message);
@@ -197,6 +242,7 @@ function startBridge() {
     isShuttingDown = true;
     clearReconnectTimer();
     stopContextUsageWatcher();
+    rolloutLiveMirror.stopAll();
     desktopRefresher.handleTransportReset?.();
     if (socket?.readyState === WebSocket.OPEN || socket?.readyState === WebSocket.CONNECTING) {
       socket.close();
@@ -223,10 +269,22 @@ function startBridge() {
     if (handleWorkspaceRequest(rawMessage, sendApplicationResponse)) {
       return;
     }
+    if (notificationsHandler.handleNotificationsRequest(rawMessage, sendApplicationResponse)) {
+      return;
+    }
+    if (handleDesktopRequest(rawMessage, sendApplicationResponse, {
+      bundleId: config.codexBundleId,
+      appPath: config.codexAppPath,
+    })) {
+      return;
+    }
     if (handleGitRequest(rawMessage, sendApplicationResponse)) {
       return;
     }
     desktopRefresher.handleInbound(rawMessage);
+    if (!config.codexEndpoint) {
+      rolloutLiveMirror.observeInbound(rawMessage);
+    }
     rememberThreadFromMessage("phone", rawMessage);
     codex.send(rawMessage);
   }
@@ -241,6 +299,13 @@ function startBridge() {
       }
     });
   }
+
+  // Replays desktop-origin rollout activity only for spawned-runtime sessions.
+  // When the bridge is attached to a real Codex endpoint, let that live stream
+  // be authoritative to avoid duplicating mirrored thinking/tool activity.
+  const rolloutLiveMirror = createRolloutLiveMirrorController({
+    sendApplicationResponse,
+  });
 
   function rememberThreadFromMessage(source, rawMessage) {
     const context = extractBridgeMessageContext(rawMessage);
