@@ -36,6 +36,12 @@ Start the bridge:
 remodex-windows-fix up
 ```
 
+Reset the saved pairing state and force a brand new QR:
+
+```bash
+remodex-windows-fix reset-pairing
+```
+
 Resume the last active thread:
 
 ```bash
@@ -72,6 +78,22 @@ You can also pass a custom relay URL:
 ```bat
 run-clean-qr.bat wss://YOUR-RELAY/relay
 ```
+
+## Pairing Behavior
+
+The bridge now keeps a stable saved relay session id, so you only need to scan the QR once per paired iPhone in normal use.
+
+After the first QR pairing:
+
+- you can stop and start `remodex-windows-fix up` again
+- the same iPhone can reconnect with trusted reconnect
+- you do not need a fresh QR unless you intentionally reset pairing
+
+Use `remodex-windows-fix reset-pairing` when you want to:
+
+- pair a different iPhone
+- discard the saved trust/session state
+- force a brand new QR bootstrap
 
 ## Windows Override
 

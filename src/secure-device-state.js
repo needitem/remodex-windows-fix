@@ -54,13 +54,20 @@ function resetBridgeDeviceState() {
   };
 }
 
-// Generates a fresh relay session for every bridge launch so QR pairing stays explicit per-run.
+// Reuses the saved relay session so the paired iPhone can reconnect without rescanning.
 function resolveBridgeRelaySession(state) {
+  const persistedSessionId = normalizeNonEmptyString(state?.relaySessionId);
   return {
-    deviceState: state,
-    isPersistent: false,
-    sessionId: randomUUID(),
+    deviceState: persistedSessionId
+      ? state
+      : rememberRelaySessionId(state, randomUUID(), { persist: true }),
+    isPersistent: true,
+    sessionId: persistedSessionId || readRelaySessionId(state),
   };
+}
+
+function readRelaySessionId(state) {
+  return normalizeNonEmptyString(state?.relaySessionId);
 }
 
 // Persists the trusted iPhone identity so reconnects can be authenticated during the current pairing flow.
@@ -102,6 +109,7 @@ function createBridgeDeviceState() {
     macDeviceId: randomUUID(),
     macIdentityPublicKey: base64UrlToBase64(publicJwk.x),
     macIdentityPrivateKey: base64UrlToBase64(privateJwk.d),
+    relaySessionId: randomUUID(),
     trustedPhones: {},
   };
 }
@@ -310,6 +318,7 @@ function normalizeBridgeDeviceState(rawState) {
   const macDeviceId = normalizeNonEmptyString(rawState?.macDeviceId);
   const macIdentityPublicKey = normalizeNonEmptyString(rawState?.macIdentityPublicKey);
   const macIdentityPrivateKey = normalizeNonEmptyString(rawState?.macIdentityPrivateKey);
+  const relaySessionId = normalizeNonEmptyString(rawState?.relaySessionId) || randomUUID();
 
   if (!macDeviceId || !macIdentityPublicKey || !macIdentityPrivateKey) {
     throw new Error("Bridge device state is incomplete");
@@ -332,8 +341,25 @@ function normalizeBridgeDeviceState(rawState) {
     macDeviceId,
     macIdentityPublicKey,
     macIdentityPrivateKey,
+    relaySessionId,
     trustedPhones,
   };
+}
+
+function rememberRelaySessionId(state, relaySessionId, { persist = true } = {}) {
+  const normalizedRelaySessionId = normalizeNonEmptyString(relaySessionId);
+  if (!normalizedRelaySessionId) {
+    return state;
+  }
+
+  const nextState = normalizeBridgeDeviceState({
+    ...state,
+    relaySessionId: normalizedRelaySessionId,
+  });
+  if (persist) {
+    writeBridgeDeviceState(nextState);
+  }
+  return nextState;
 }
 
 function bridgeStatesEqual(left, right) {
