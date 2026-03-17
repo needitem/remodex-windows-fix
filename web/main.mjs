@@ -2,12 +2,20 @@ import { inferRelayBaseUrl } from "./modules/browser-relay-client.mjs";
 import { createBrowserBridgeClient } from "./modules/browser-bridge-client.mjs";
 import { collectBrowserCapabilities } from "./modules/capabilities.mjs";
 import { decodePairingPayloadFromFile, describePairingPayload, parsePairingPayload } from "./modules/pairing.mjs";
-import { clearStoredPairingPayload, loadStoredPairingPayload, loadStoredRelayOverride, saveStoredPairingPayload, saveStoredRelayOverride } from "./modules/storage.mjs";
+import {
+  clearStoredPairingPayload,
+  loadStoredLastThreadId,
+  loadStoredPairingPayload,
+  loadStoredRelayOverride,
+  loadStoredThreadCache,
+  saveStoredLastThreadId,
+  saveStoredPairingPayload,
+  saveStoredRelayOverride,
+  saveStoredThreadCache,
+} from "./modules/storage.mjs";
 import { ACCESS_OPTIONS, MODEL_OPTIONS, REASONING_OPTIONS, REPOSITORY_BRANCHES, SPEED_OPTIONS } from "./modules/mock-data.mjs";
 import { loadPreferences, savePreferences } from "./modules/preferences.mjs";
 import { createScannerController } from "./modules/scanner-controller.mjs";
-
-const LAST_THREAD_STORAGE_KEY = "remodex-web.last-thread-id";
 
 const state = {
   accountSummary: "Account: Unknown",
@@ -33,6 +41,7 @@ const state = {
   searchQuery: "",
   selectedChatId: loadStoredLastThreadId(),
   sidebarOpen: false,
+  threadCache: loadStoredThreadCache(),
   mobileThreadOpen: false,
 };
 
@@ -397,12 +406,13 @@ async function sendMessage() {
     return;
   }
 
-  chat.messages.push({ role: "user", author: "You", time: "now", text });
-  chat.messages.push({ role: "assistant", author: "Codex", time: "pending", text: "Sending to Codex..." });
+  chat.messages.push({ id: `local-user-${Date.now()}`, role: "user", author: "You", time: "now", text });
+  chat.messages.push({ id: `pending-${Date.now()}`, pending: true, role: "assistant", author: "Codex", time: "pending", text: "Sending to Codex..." });
   chat.snippet = text;
   chat.timestamp = "now";
   chat.access = elements.accessSelect.value;
   elements.composerInput.value = "";
+  persistThreadCacheForChat(chat);
   renderAll();
 
   if (!state.client) {
@@ -441,7 +451,9 @@ async function sendMessage() {
 
     await pollThreadUntilSettled(chat.threadId);
   } catch (error) {
+    chat.messages = chat.messages.filter((message) => !message.pending);
     addLog("error", error.message || "Failed to send the turn.", "turn/start");
+    persistThreadCacheForChat(chat);
     renderLogs();
   }
 }
@@ -782,6 +794,33 @@ function handleNotification(notification) {
     return;
   }
 
+  if (method === "account/rateLimits/updated") {
+    state.rateLimitSummary = summarizeRateLimits({ rateLimits: notification.params?.rateLimits });
+    renderRuntimeStrip();
+    return;
+  }
+
+  if (method === "item/agentMessage/delta") {
+    applyAgentDeltaNotification(notification.params);
+    return;
+  }
+
+  if (method === "item/completed") {
+    applyCompletedItemNotification(notification.params);
+    return;
+  }
+
+  if (method === "turn/completed") {
+    const threadId = notification.params?.threadId || notification.params?.thread?.id || notification.params?.thread?.threadId;
+    if (threadId) {
+      const chat = findChatByThreadId(threadId);
+      if (chat) {
+        chat.messages = chat.messages.filter((message) => !message.pending);
+        persistThreadCacheForChat(chat);
+      }
+    }
+  }
+
   addLog("info", `Received ${method}.`, "notification");
   renderLogs();
 
@@ -870,7 +909,7 @@ function groupRemoteThreads(threads) {
 }
 
 function threadToChat(thread) {
-  return {
+  const nextChat = {
     access: state.preferences.access,
     branch: thread.gitInfo?.branch || "main",
     cwd: thread.cwd,
@@ -884,18 +923,20 @@ function threadToChat(thread) {
     timestamp: relativeTimeFromUnix(thread.updatedAt),
     title: thread.name || thread.preview || "Untitled thread",
   };
+  return mergeChatWithCache(nextChat);
 }
 
 function hydrateChatFromThread(chat, thread) {
   chat.branch = thread.gitInfo?.branch || chat.branch;
   chat.cwd = thread.cwd;
-  chat.messages = extractMessagesFromThread(thread);
+  chat.messages = mergeMessagesWithCache(thread.id, extractMessagesFromThread(thread));
   chat.messagesLoaded = true;
   chat.originUrl = thread.gitInfo?.originUrl || chat.originUrl || null;
   chat.repo = repoLabelFromThread(thread);
   chat.snippet = thread.preview || chat.snippet;
   chat.timestamp = relativeTimeFromUnix(thread.updatedAt);
   chat.title = thread.name || thread.preview || chat.title;
+  persistThreadCacheForChat(chat);
 }
 
 function extractMessagesFromThread(thread) {
@@ -1032,24 +1073,6 @@ function summarizeRateLimits(rateLimitResult) {
   return "Usage: Available";
 }
 
-function persistLastThreadId(threadId) {
-  try {
-    if (!threadId) {
-      localStorage.removeItem(LAST_THREAD_STORAGE_KEY);
-      return;
-    }
-    localStorage.setItem(LAST_THREAD_STORAGE_KEY, threadId);
-  } catch {}
-}
-
-function loadStoredLastThreadId() {
-  try {
-    return localStorage.getItem(LAST_THREAD_STORAGE_KEY) || null;
-  } catch {
-    return null;
-  }
-}
-
 function repoLabelFromThread(thread) {
   const originUrl = thread.gitInfo?.originUrl || "";
   const repoFromOrigin = originUrl.match(/\/([^/]+?)(?:\.git)?$/)?.[1];
@@ -1076,6 +1099,140 @@ function relativeTimeFromUnix(unixSeconds) {
     return `${deltaHours}h`;
   }
   return `${Math.max(1, Math.floor(deltaSeconds / 60))}m`;
+}
+
+function applyAgentDeltaNotification(params) {
+  const threadId = params?.threadId;
+  const itemId = params?.itemId;
+  const delta = typeof params?.delta === "string" ? params.delta : "";
+  if (!threadId || !itemId || !delta) {
+    return;
+  }
+
+  const chat = findChatByThreadId(threadId);
+  if (!chat) {
+    return;
+  }
+
+  let message = chat.messages.find((entry) => entry.id === itemId);
+  if (!message) {
+    chat.messages = chat.messages.filter((entry) => !entry.pending);
+    message = {
+      id: itemId,
+      role: "assistant",
+      author: "Codex",
+      time: "streaming",
+      text: "",
+    };
+    chat.messages.push(message);
+  }
+
+  message.text += delta;
+  chat.snippet = message.text.slice(0, 120) || chat.snippet;
+  persistThreadCacheForChat(chat);
+  if (selectedChat()?.id === chat.id) {
+    renderConversation();
+  }
+}
+
+function applyCompletedItemNotification(params) {
+  const threadId = params?.threadId;
+  const item = params?.item;
+  if (!threadId || !item?.type) {
+    return;
+  }
+
+  const chat = findChatByThreadId(threadId);
+  if (!chat) {
+    return;
+  }
+
+  if (item.type === "agentMessage") {
+    chat.messages = chat.messages.filter((entry) => !entry.pending);
+    const existing = chat.messages.find((entry) => entry.id === item.id);
+    if (existing) {
+      existing.text = item.text || existing.text;
+      existing.time = item.phase || "completed";
+    } else {
+      chat.messages.push({
+        id: item.id,
+        role: "assistant",
+        author: "Codex",
+        time: item.phase || "completed",
+        text: item.text || "",
+      });
+    }
+    chat.snippet = item.text || chat.snippet;
+  }
+
+  if (item.type === "reasoning" && Array.isArray(item.summary) && item.summary.length) {
+    chat.messages.push({
+      id: item.id,
+      role: "assistant",
+      author: "Reasoning",
+      time: "completed",
+      text: item.summary.join("\n"),
+    });
+  }
+
+  persistThreadCacheForChat(chat);
+  if (selectedChat()?.id === chat.id) {
+    renderConversation();
+  }
+}
+
+function mergeChatWithCache(chat) {
+  const cached = state.threadCache[chat.threadId || chat.id];
+  if (!cached) {
+    return chat;
+  }
+
+  return {
+    ...chat,
+    access: cached.access || chat.access,
+    branch: cached.branch || chat.branch,
+    cwd: cached.cwd || chat.cwd,
+    messages: mergeMessagesWithCache(chat.threadId || chat.id, chat.messages),
+    originUrl: cached.originUrl || chat.originUrl || null,
+    repo: cached.repo || chat.repo,
+    snippet: cached.snippet || chat.snippet,
+    title: cached.title || chat.title,
+  };
+}
+
+function mergeMessagesWithCache(threadId, serverMessages) {
+  const cached = state.threadCache[threadId];
+  if (!cached?.messages?.length) {
+    return serverMessages;
+  }
+  if (!serverMessages.length) {
+    return cached.messages;
+  }
+
+  return cached.messages.length > serverMessages.length ? cached.messages : serverMessages;
+}
+
+function persistThreadCacheForChat(chat) {
+  const threadId = chat.threadId || chat.id;
+  if (!threadId) {
+    return;
+  }
+
+  state.threadCache[threadId] = {
+    access: chat.access,
+    branch: chat.branch,
+    cwd: chat.cwd || null,
+    messages: chat.messages,
+    originUrl: chat.originUrl || null,
+    repo: chat.repo,
+    snippet: chat.snippet,
+    title: chat.title,
+  };
+  saveStoredThreadCache(state.threadCache);
+}
+
+function persistLastThreadId(threadId) {
+  saveStoredLastThreadId(threadId);
 }
 
 function setOptions(select, values, selectedValue = select.value) {

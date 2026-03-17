@@ -50,6 +50,28 @@ test("pairing parser rejects incomplete payloads", async () => {
   );
 });
 
+test("web storage exposes the persisted client note default", async () => {
+  const storage = createMemoryStorage();
+  const previousLocalStorage = globalThis.localStorage;
+  globalThis.localStorage = storage;
+
+  try {
+    const {
+      DEFAULT_PERSISTED_CLIENT_NOTE,
+      loadStoredClientNote,
+      saveStoredClientNote,
+    } = await import(`../web/modules/storage.mjs?case=${Date.now()}`);
+
+    assert.equal(DEFAULT_PERSISTED_CLIENT_NOTE, "hello from web client");
+    assert.equal(loadStoredClientNote(), "");
+
+    saveStoredClientNote(DEFAULT_PERSISTED_CLIENT_NOTE);
+    assert.equal(loadStoredClientNote(), "hello from web client");
+  } finally {
+    globalThis.localStorage = previousLocalStorage;
+  }
+});
+
 test("browser secure transport completes the secure handshake and decrypts bridge envelopes", async () => {
   const storage = createMemoryStorage();
   const macIdentity = createOkpKeyPair("ed25519");
