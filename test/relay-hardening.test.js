@@ -9,6 +9,7 @@ const assert = require("node:assert/strict");
 
 const {
   relaySessionLogLabel,
+  resolveRelayRole,
   timingSafeSecretMatch,
 } = require("../relay/relay");
 const { FixedWindowRateLimiter } = require("../src/fixed-window-rate-limiter");
@@ -67,4 +68,28 @@ test("redactRelayPathname hides session ids in upgrade logs", () => {
 
   assert.match(redacted, /^\/relay\/session#[0-9a-f]{8}\?role=mac$/);
   assert.equal(redacted.includes("very-secret-session-id"), false);
+});
+
+test("resolveRelayRole accepts browser iphone clients through the query string only", () => {
+  assert.equal(
+    resolveRelayRole({
+      headers: {},
+      url: "/relay/session-1?role=iphone",
+    }),
+    "iphone"
+  );
+  assert.equal(
+    resolveRelayRole({
+      headers: {},
+      url: "/relay/session-1?role=mac",
+    }),
+    null
+  );
+  assert.equal(
+    resolveRelayRole({
+      headers: { "x-role": "mac" },
+      url: "/relay/session-1?role=iphone",
+    }),
+    "mac"
+  );
 });

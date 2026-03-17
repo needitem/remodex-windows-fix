@@ -34,7 +34,7 @@ function setupRelay(wss) {
     const urlPath = req.url || "";
     const match = urlPath.match(/^\/relay\/([^/?]+)/);
     const sessionId = match?.[1];
-    const role = req.headers["x-role"];
+    const role = resolveRelayRole(req);
 
     if (!sessionId || (role !== "mac" && role !== "iphone")) {
       ws.close(4000, "Missing sessionId or invalid x-role header");
@@ -213,6 +213,26 @@ function readHeaderString(value) {
   return typeof candidate === "string" && candidate.trim() ? candidate.trim() : null;
 }
 
+function resolveRelayRole(req) {
+  const headerRole = readHeaderString(req?.headers?.["x-role"]);
+  if (headerRole === "mac" || headerRole === "iphone") {
+    return headerRole;
+  }
+
+  const requestUrl = typeof req?.url === "string" ? req.url : "";
+  if (!requestUrl) {
+    return null;
+  }
+
+  try {
+    const parsedUrl = new URL(requestUrl, "http://localhost");
+    const queryRole = readHeaderString(parsedUrl.searchParams.get("role"));
+    return queryRole === "iphone" ? queryRole : null;
+  } catch {
+    return null;
+  }
+}
+
 function relaySessionLogLabel(sessionId) {
   const normalizedSessionId = typeof sessionId === "string" ? sessionId.trim() : "";
   if (!normalizedSessionId) {
@@ -246,5 +266,6 @@ module.exports = {
   hasActiveMacSession,
   hasAuthenticatedMacSession,
   relaySessionLogLabel,
+  resolveRelayRole,
   timingSafeSecretMatch,
 };

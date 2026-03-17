@@ -1,4 +1,5 @@
 import { DurableObject } from "cloudflare:workers";
+import { WEB_ASSETS } from "./web-assets.generated.mjs";
 
 const CLOSE_CODE_INVALID_SESSION = 4000;
 const CLOSE_CODE_MAC_REPLACED = 4001;
@@ -14,6 +15,21 @@ export default {
         ok: true,
         service: "remodex-relay",
         runtime: "cloudflare-workers",
+      });
+    }
+
+    if (url.pathname === "/app") {
+      return Response.redirect(`${url.origin}/app/`, 302);
+    }
+
+    const webAsset = WEB_ASSETS.get(url.pathname);
+    if (webAsset) {
+      return new Response(webAsset.body, {
+        status: 200,
+        headers: {
+          "cache-control": webAsset.cacheControl,
+          "content-type": webAsset.contentType,
+        },
       });
     }
 
@@ -55,7 +71,7 @@ export class SessionRelay extends DurableObject {
 
     const url = new URL(request.url);
     const sessionId = url.pathname.match(/^\/relay\/([^/?]+)/)?.[1];
-    const role = request.headers.get("x-role");
+    const role = resolveRelayRole(request, url);
 
     if (!sessionId || (role !== "mac" && role !== "iphone")) {
       return closeWebSocketResponse(
@@ -202,6 +218,16 @@ function closeWebSocketResponse(code, reason) {
 
 function readHeaderString(value) {
   return typeof value === "string" && value.trim() ? value.trim() : null;
+}
+
+function resolveRelayRole(request, url = new URL(request.url)) {
+  const headerRole = readHeaderString(request.headers.get("x-role"));
+  if (headerRole === "mac" || headerRole === "iphone") {
+    return headerRole;
+  }
+
+  const queryRole = readHeaderString(url.searchParams.get("role"));
+  return queryRole === "iphone" ? queryRole : null;
 }
 
 function relaySessionLogLabel(sessionId) {

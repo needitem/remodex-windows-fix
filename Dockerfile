@@ -8,6 +8,7 @@ RUN npm ci --omit=dev
 COPY bin ./bin
 COPY relay ./relay
 COPY src ./src
+COPY web ./web
 
 EXPOSE 9000
 

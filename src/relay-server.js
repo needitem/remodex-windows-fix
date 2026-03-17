@@ -2,7 +2,7 @@
 // Purpose: Small HTTP wrapper that hosts the upstream-compatible WebSocket relay.
 // Layer: CLI service
 // Exports: startRelayServer
-// Depends on: http, ws, ../relay/relay, ./fixed-window-rate-limiter
+// Depends on: http, ws, ../relay/relay, ./fixed-window-rate-limiter, ./web-client-static
 
 const http = require("http");
 const { WebSocketServer } = require("ws");
@@ -12,6 +12,7 @@ const {
   setupRelay,
 } = require("../relay/relay");
 const { FixedWindowRateLimiter } = require("./fixed-window-rate-limiter");
+const { serveWebClientRequest } = require("./web-client-static");
 
 function startRelayServer({
   host = process.env.REMODEX_RELAY_HOST || "0.0.0.0",
@@ -48,6 +49,10 @@ function startRelayServer({
         "content-length": Buffer.byteLength(payload, "utf8"),
       });
       res.end(payload);
+      return;
+    }
+
+    if (serveWebClientRequest(req, res)) {
       return;
     }
 

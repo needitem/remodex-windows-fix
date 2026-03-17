@@ -13,12 +13,14 @@
     "relay/",
     "render.yaml",
     "src/",
+    "web/",
     "wrangler.toml"
   ],
   "scripts": {
     "start": "node ./bin/remodex.js up",
     "relay": "node ./bin/remodex-relay.js",
-    "test": "node --test ./test/*.test.js"
+    "test": "node --test ./test/*.test.js",
+    "web:assets": "node ./src/generate-web-asset-map.js"
   },
   "keywords": [
     "remodex",

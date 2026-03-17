@@ -131,6 +131,24 @@ Docker Compose:
 docker compose up -d
 ```
 
+Browser client skeleton:
+
+```text
+http://YOUR_HOST:9000/app/
+```
+
+The Node relay now serves a PWA shell at `/app/` so you can start building a browser-based client on the same origin as the relay.
+Current scope:
+
+- imports pairing JSON directly
+- attempts QR image decoding through `BarcodeDetector` when the browser supports it
+- opens a browser WebSocket as `role=iphone`
+- persists relay/pairing state locally
+
+Current limitation:
+
+- the browser secure pairing handshake (`clientHello` / `clientAuth` / encrypted envelopes) is scaffolded in the UI only and is not implemented yet
+
 Optional relay host/port overrides:
 
 ```powershell
@@ -170,6 +188,14 @@ if you want `/health` to include session counters for monitoring.
 This repository also includes a Cloudflare Workers relay implementation in [cloudflare/worker.mjs](cloudflare/worker.mjs) with Durable Objects configured in [wrangler.toml](wrangler.toml).
 
 GitHub itself still does not host persistent WebSocket servers, but Cloudflare Workers can deploy this relay directly from your GitHub repository without running anything locally.
+
+The Worker also accepts browser `iphone` clients through `?role=iphone`, which is necessary because browser WebSockets cannot send the `x-role` header.
+
+The same Worker deployment now also serves the browser client shell at:
+
+```text
+https://YOUR-WORKER.YOUR-SUBDOMAIN.workers.dev/app/
+```
 
 Import this repository in Cloudflare:
 
@@ -244,6 +270,7 @@ compose.yaml
 Dockerfile
 relay/
 src/
+web/
 wrangler.toml
 package.json
 ```

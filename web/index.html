@@ -1,0 +1,274 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="theme-color" content="#f5f5f7">
+  <title>Remodex Web</title>
+  <link rel="manifest" href="./manifest.webmanifest">
+  <link rel="icon" href="./icon.svg" type="image/svg+xml">
+  <link rel="stylesheet" href="./styles.css">
+</head>
+<body>
+  <div class="app-frame">
+    <aside class="sidebar" data-sidebar>
+      <div class="sidebar-top">
+        <div class="brand-row">
+          <button class="icon-button mobile-only" type="button" data-close-sidebar aria-label="Close sidebar">
+            <span></span>
+            <span></span>
+          </button>
+          <div class="brand-mark">R</div>
+          <div>
+            <p class="eyebrow">Remodex</p>
+            <h1>Workspace Deck</h1>
+          </div>
+        </div>
+
+        <label class="search-shell">
+          <svg viewBox="0 0 24 24" aria-hidden="true">
+            <path d="M10.5 4a6.5 6.5 0 1 1 0 13a6.5 6.5 0 0 1 0-13Zm0 1.8a4.7 4.7 0 1 0 0 9.4a4.7 4.7 0 0 0 0-9.4Zm6.54 10l3 3l-1.27 1.27l-3-3Z"></path>
+          </svg>
+          <input id="search-input" type="search" placeholder="Search conversations">
+        </label>
+
+        <div class="sidebar-actions">
+          <button id="new-chat-button" class="pill-button" type="button">New Chat</button>
+          <button id="open-scanner-button" class="pill-button pill-button-accent" type="button">Scan QR</button>
+        </div>
+      </div>
+
+      <div class="sidebar-scroll">
+        <div id="folder-list" class="folder-list"></div>
+      </div>
+
+      <div class="sidebar-footer">
+        <div class="connection-card">
+          <div class="connection-head">
+            <div>
+              <p class="eyebrow eyebrow-muted">Connection</p>
+              <p id="connection-label" class="connection-label">Waiting for pairing</p>
+            </div>
+            <span id="connection-dot" class="connection-dot"></span>
+          </div>
+          <p id="connection-meta" class="connection-meta">Load a QR or pairing JSON to connect the browser client.</p>
+          <div class="connection-buttons">
+            <button id="connect-button" class="mini-button" type="button">Connect</button>
+            <button id="disconnect-button" class="mini-button mini-button-subtle" type="button">Disconnect</button>
+          </div>
+        </div>
+
+        <button id="open-settings-button" class="settings-button" type="button">
+          <svg viewBox="0 0 24 24" aria-hidden="true">
+            <path d="M12 8.4A3.6 3.6 0 1 1 8.4 12A3.6 3.6 0 0 1 12 8.4Zm8.2 4.52l-1.8-.6a6.82 6.82 0 0 0-.47-1.13l.86-1.7l-1.7-1.7l-1.7.86a6.83 6.83 0 0 0-1.13-.47l-.6-1.8h-2.4l-.6 1.8a6.83 6.83 0 0 0-1.13.47l-1.7-.86l-1.7 1.7l.86 1.7c-.2.36-.35.74-.47 1.13l-1.8.6v2.4l1.8.6c.12.39.27.77.47 1.13l-.86 1.7l1.7 1.7l1.7-.86c.36.2.74.35 1.13.47l.6 1.8h2.4l.6-1.8c.39-.12.77-.27 1.13-.47l1.7.86l1.7-1.7l-.86-1.7c.2-.36.35-.74.47-1.13l1.8-.6Z"></path>
+          </svg>
+          Settings
+        </button>
+      </div>
+    </aside>
+
+    <main class="conversation-shell">
+      <header class="conversation-header">
+        <div class="conversation-header-left">
+          <button class="icon-button desktop-hidden" type="button" data-open-sidebar aria-label="Open sidebar">
+            <span></span>
+            <span></span>
+          </button>
+          <div>
+            <p id="thread-repo-label" class="eyebrow eyebrow-muted">Repository</p>
+            <h2 id="thread-title">Select a chat</h2>
+            <p id="thread-subtitle" class="thread-subtitle">Messages, branch defaults, and relay pairing all stay in one place.</p>
+          </div>
+        </div>
+
+        <div class="conversation-header-actions">
+          <button class="header-chip" id="header-scan-button" type="button">Scan QR</button>
+          <button class="header-chip" id="header-settings-button" type="button">Settings</button>
+        </div>
+      </header>
+
+      <section id="message-list" class="message-list" aria-live="polite"></section>
+
+      <section class="composer-shell">
+        <div class="composer-toolbar">
+          <button class="composer-plus" id="import-file-button" type="button" aria-label="Import QR image or pairing JSON">+</button>
+          <div class="toolbar-selects">
+            <label class="toolbar-select">
+              <span>Model</span>
+              <select id="model-select"></select>
+            </label>
+            <label class="toolbar-select">
+              <span>Reasoning</span>
+              <select id="reasoning-select"></select>
+            </label>
+            <label class="toolbar-select desktop-only">
+              <span>Speed</span>
+              <select id="speed-select"></select>
+            </label>
+          </div>
+        </div>
+
+        <label class="composer-input-wrap">
+          <textarea id="composer-input" rows="4" placeholder="Ask anything... @files, $skills, /commands"></textarea>
+        </label>
+
+        <div class="composer-footer">
+          <div class="composer-context">
+            <label class="context-chip">
+              <span>Repo</span>
+              <select id="repo-select"></select>
+            </label>
+            <label class="context-chip">
+              <span>Branch</span>
+              <select id="branch-select"></select>
+            </label>
+            <label class="context-chip">
+              <span>Access</span>
+              <select id="access-select"></select>
+            </label>
+          </div>
+
+          <div class="composer-submit">
+            <p id="composer-status" class="composer-status">Local runtime ready</p>
+            <button id="send-button" class="send-button" type="button">Send</button>
+          </div>
+        </div>
+      </section>
+    </main>
+  </div>
+
+  <aside class="settings-sheet" id="settings-sheet" aria-hidden="true">
+    <div class="settings-panel">
+      <header class="settings-header">
+        <button id="close-settings-button" class="icon-button" type="button" aria-label="Close settings">
+          <span></span>
+          <span></span>
+        </button>
+        <h2>Settings</h2>
+      </header>
+
+      <section class="settings-group">
+        <p class="settings-label">Archived Chats</p>
+        <button class="settings-row" type="button">
+          <span>Archived Chats</span>
+          <span class="settings-value">22</span>
+        </button>
+      </section>
+
+      <section class="settings-group">
+        <p class="settings-label">Appearance</p>
+        <div class="settings-card">
+          <label class="settings-field">
+            <span>Font</span>
+            <select id="font-select">
+              <option value="system">System</option>
+              <option value="rounded">Rounded</option>
+            </select>
+          </label>
+          <label class="toggle-row">
+            <div>
+              <span class="toggle-title">Liquid Glass</span>
+              <span class="toggle-copy">Soft translucency and depth across panels.</span>
+            </div>
+            <input id="glass-toggle" type="checkbox" checked>
+          </label>
+        </div>
+      </section>
+
+      <section class="settings-group">
+        <p class="settings-label">Notifications</p>
+        <div class="settings-card">
+          <div class="settings-field static-field">
+            <span>Status</span>
+            <strong id="push-status-label">Browser default</strong>
+            <p>Web Push is not wired yet. This stays as a placeholder for the PWA flow.</p>
+          </div>
+        </div>
+      </section>
+
+      <section class="settings-group">
+        <p class="settings-label">Runtime Defaults</p>
+        <div class="settings-card grid-card">
+          <label class="settings-field">
+            <span>Model</span>
+            <select id="settings-model-select"></select>
+          </label>
+          <label class="settings-field">
+            <span>Reasoning</span>
+            <select id="settings-reasoning-select"></select>
+          </label>
+          <label class="settings-field">
+            <span>Speed</span>
+            <select id="settings-speed-select"></select>
+          </label>
+          <label class="settings-field">
+            <span>Access</span>
+            <select id="settings-access-select"></select>
+          </label>
+        </div>
+      </section>
+
+      <section class="settings-group">
+        <p class="settings-label">Connection</p>
+        <div class="settings-card connection-settings-card">
+          <label class="settings-field">
+            <span>Relay Base URL</span>
+            <input id="relay-url-input" type="url" placeholder="wss://example.com/relay" autocomplete="off">
+          </label>
+          <label class="settings-field">
+            <span>Pairing Payload</span>
+            <textarea id="pairing-json-input" rows="8" placeholder='{"v":2,"relay":"wss://example.com/relay","sessionId":"..."}'></textarea>
+          </label>
+          <div class="settings-actions">
+            <button id="load-pairing-button" type="button">Load Pairing</button>
+            <button id="clear-pairing-button" class="mini-button mini-button-subtle" type="button">Clear</button>
+          </div>
+          <div class="pairing-summary">
+            <div>
+              <span>Session</span>
+              <strong id="summary-session">Not loaded</strong>
+            </div>
+            <div>
+              <span>Relay</span>
+              <strong id="summary-relay">Not loaded</strong>
+            </div>
+            <div>
+              <span>Mac Device</span>
+              <strong id="summary-device">Not loaded</strong>
+            </div>
+            <div>
+              <span>Expires</span>
+              <strong id="summary-expiry">Not loaded</strong>
+            </div>
+          </div>
+          <div class="relay-events">
+            <p class="settings-label settings-label-inline">Relay Events</p>
+            <ul id="log-list" class="event-log"></ul>
+          </div>
+        </div>
+      </section>
+    </div>
+  </aside>
+
+  <div class="scanner-modal" id="scanner-modal" aria-hidden="true">
+    <div class="scanner-panel">
+      <button id="close-scanner-button" class="scanner-close" type="button" aria-label="Close scanner">Close</button>
+      <div class="scanner-preview">
+        <video id="scanner-video" playsinline muted></video>
+        <div class="scanner-frame"></div>
+        <div class="scanner-overlay-copy">
+          <p class="scanner-title">Scan QR code from Remodex CLI</p>
+          <p id="scanner-status" class="scanner-status">Use the rear camera or import a QR image.</p>
+        </div>
+      </div>
+      <div class="scanner-actions">
+        <button id="scanner-start-button" type="button">Start Camera</button>
+        <button id="scanner-import-button" class="mini-button mini-button-subtle" type="button">Import Image</button>
+      </div>
+    </div>
+  </div>
+
+  <input id="pairing-file-input" type="file" accept=".json,application/json,image/*" hidden>
+  <script type="module" src="./main.mjs"></script>
+</body>
+</html>
