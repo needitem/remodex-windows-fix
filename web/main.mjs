@@ -19,6 +19,7 @@ const state = {
   searchQuery: "",
   selectedChatId: "remodex-pull",
   sidebarOpen: false,
+  mobileThreadOpen: false,
 };
 
 const elements = mapElements();
@@ -59,6 +60,7 @@ function mapElements() {
     logList: document.querySelector("#log-list"),
     messageList: document.querySelector("#message-list"),
     modelSelect: document.querySelector("#model-select"),
+    mobileBackButton: document.querySelector("#mobile-back-button"),
     newChatButton: document.querySelector("#new-chat-button"),
     openScannerButton: document.querySelector("#open-scanner-button"),
     openSettingsButton: document.querySelector("#open-settings-button"),
@@ -126,8 +128,10 @@ function wireEvents() {
   elements.relayUrlInput.addEventListener("change", (event) => { state.relayOverride = event.target.value.trim(); saveStoredRelayOverride(state.relayOverride); addLog("info", "Updated relay base URL.", state.relayOverride || "inferred"); renderConnection(); });
   elements.connectButton.addEventListener("click", connectRelay);
   elements.disconnectButton.addEventListener("click", () => void disconnectRelay(false));
-  document.querySelector("[data-open-sidebar]")?.addEventListener("click", () => { state.sidebarOpen = true; renderBody(); });
-  document.querySelector("[data-close-sidebar]")?.addEventListener("click", () => { state.sidebarOpen = false; renderBody(); });
+  elements.mobileBackButton.addEventListener("click", () => {
+    state.mobileThreadOpen = false;
+    renderBody();
+  });
 }
 
 function renderAll() {
@@ -143,6 +147,7 @@ function renderAll() {
 
 function renderBody() {
   elements.body.classList.toggle("sidebar-open", state.sidebarOpen);
+  elements.body.classList.toggle("mobile-thread-open", state.mobileThreadOpen && isNarrowViewport());
   elements.body.classList.toggle("font-rounded", state.preferences.font === "rounded");
   elements.body.classList.toggle("no-glass", state.preferences.glass === false);
 }
@@ -179,6 +184,9 @@ function renderSidebar() {
       button.addEventListener("click", () => {
         state.selectedChatId = chat.id;
         state.sidebarOpen = false;
+        if (isNarrowViewport()) {
+          state.mobileThreadOpen = true;
+        }
         renderAll();
         if (chat.threadId && !chat.messagesLoaded) {
           void readRemoteThread(chat.threadId);
@@ -294,6 +302,9 @@ function createLocalChat(folderName = selectedChat()?.repo || state.conversation
   };
   group.chats.unshift(chat);
   state.selectedChatId = chat.id;
+  if (isNarrowViewport()) {
+    state.mobileThreadOpen = true;
+  }
   addLog("info", "Created a new local draft thread.", group.folder);
   renderAll();
 }
@@ -791,6 +802,10 @@ function setOptions(select, values, selectedValue = select.value) {
 function addLog(level, message, meta = new Date().toLocaleTimeString()) {
   state.logs.unshift({ level, message, meta });
   state.logs = state.logs.slice(0, 8);
+}
+
+function isNarrowViewport() {
+  return window.matchMedia("(max-width: 920px)").matches;
 }
 
 function truncate(value, maxLength) {
