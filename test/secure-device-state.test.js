@@ -56,6 +56,31 @@ test("loadOrCreateBridgeDeviceState persists relaySessionId and resolveBridgeRel
   }
 });
 
+test("rememberTrustedPhone preserves previously trusted devices when adding a browser client", async () => {
+  delete require.cache[require.resolve("../src/secure-device-state")];
+  const { rememberTrustedPhone } = require("../src/secure-device-state");
+
+  const firstState = rememberTrustedPhone(
+    {
+      macDeviceId: "mac-1",
+      macIdentityPrivateKey: "private",
+      macIdentityPublicKey: "public",
+      relaySessionId: "session-1",
+      trustedPhones: {
+        "iphone-1": "pub-1",
+      },
+    },
+    "browser-1",
+    "pub-browser",
+    { persist: false }
+  );
+
+  assert.deepEqual(firstState.trustedPhones, {
+    "iphone-1": "pub-1",
+    "browser-1": "pub-browser",
+  });
+});
+
 function restoreEnv(previousEnv) {
   for (const [key, value] of Object.entries(previousEnv)) {
     if (value == null) {

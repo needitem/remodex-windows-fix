@@ -6,6 +6,7 @@ const APP_SHELL_URLS = [
   "/app/manifest.webmanifest",
   "/app/icon.svg",
   "/app/modules/browser-relay-client.mjs",
+  "/app/modules/browser-bridge-client.mjs",
   "/app/modules/browser-secure-transport.mjs",
   "/app/modules/capabilities.mjs",
   "/app/modules/mock-data.mjs",

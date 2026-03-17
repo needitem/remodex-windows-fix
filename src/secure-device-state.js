@@ -78,10 +78,11 @@ function rememberTrustedPhone(state, phoneDeviceId, phoneIdentityPublicKey, { pe
     return state;
   }
 
-  // Remodex supports one trusted iPhone per Mac, so a new trust record replaces old ones.
+  // Keep every trusted client identity so iPhone and browser clients can reconnect independently.
   const nextState = normalizeBridgeDeviceState({
     ...state,
     trustedPhones: {
+      ...(state?.trustedPhones || {}),
       [normalizedDeviceId]: normalizedPublicKey,
     },
   });

@@ -249,7 +249,7 @@ test("secure transport round-trips encrypted payloads after a trusted reconnect 
   ]);
 });
 
-test("qr bootstrap rejects pairing a different iPhone after one phone is trusted", () => {
+test("qr bootstrap allows pairing a second trusted client with a distinct device id", () => {
   const macIdentity = createOkpKeyPair("ed25519");
   const firstPhoneIdentity = createOkpKeyPair("ed25519");
   const firstPhoneEphemeral = createOkpKeyPair("x25519");
@@ -295,13 +295,13 @@ test("qr bootstrap rejects pairing a different iPhone after one phone is trusted
         controlMessages.push(message);
       },
       onApplicationMessage() {
-        throw new Error("second phone bootstrap should be rejected before app traffic");
+        throw new Error("second phone bootstrap should not forward app traffic during handshake");
       },
     }
   );
 
-  assert.equal(controlMessages[0]?.kind, "secureError");
-  assert.equal(controlMessages[0]?.code, "phone_replacement_required");
+  const serverHello = controlMessages.find((message) => message.kind === "serverHello");
+  assert.ok(serverHello, "expected the second client bootstrap to proceed");
 });
 
 test("qr bootstrap starts a fresh replay window instead of leaking buffered messages", () => {

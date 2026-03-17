@@ -86,7 +86,8 @@ The bridge now keeps a stable saved relay session id, so you only need to scan t
 After the first QR pairing:
 
 - you can stop and start `remodex-windows-fix up` again
-- the same iPhone can reconnect with trusted reconnect
+- the same trusted client can reconnect without rescanning
+- you can bootstrap an additional trusted browser client with a fresh QR
 - you do not need a fresh QR unless you intentionally reset pairing
 
 Use `remodex-windows-fix reset-pairing` when you want to:

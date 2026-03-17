@@ -116,12 +116,12 @@ function createBridgeSecureTransport({ sessionId, relayUrl, deviceState }) {
     return Boolean(activeSession?.isResumed);
   }
 
-  // Rejects QR bootstraps from a second iPhone unless it is the already-trusted device.
+  // Rejects a QR bootstrap only when an existing device id is attempting to replace
+  // its previously trusted identity key.
   function hasConflictingTrustedPhone(phoneDeviceId, phoneIdentityPublicKey) {
     const trustedPhones = currentDeviceState.trustedPhones || {};
-    return Object.entries(trustedPhones).some(([trustedDeviceId, trustedPublicKey]) => (
-      trustedDeviceId !== phoneDeviceId || trustedPublicKey !== phoneIdentityPublicKey
-    ));
+    const trustedPublicKey = trustedPhones[phoneDeviceId];
+    return Boolean(trustedPublicKey && trustedPublicKey !== phoneIdentityPublicKey);
   }
 
   function handleClientHello(message, sendControlMessage) {
@@ -169,7 +169,7 @@ function createBridgeSecureTransport({ sessionId, relayUrl, deviceState }) {
     if (handshakeMode === HANDSHAKE_MODE_QR_BOOTSTRAP && hasConflictingTrustedPhone(phoneDeviceId, phoneIdentityPublicKey)) {
       sendControlMessage(createSecureError({
         code: "phone_replacement_required",
-        message: "This Mac is already paired with another iPhone. Reset pairing on the Mac before pairing a new phone.",
+        message: "This device id is already paired with a different identity. Reset pairing on the Mac before replacing it.",
       }));
       return;
     }
