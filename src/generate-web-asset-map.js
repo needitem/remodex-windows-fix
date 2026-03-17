@@ -52,9 +52,7 @@ console.log(`[remodex] Generated Cloudflare web asset map at ${OUTPUT_FILE}`);
 function buildAssetRecord(absolutePath, requestPath) {
   return {
     body: fs.readFileSync(absolutePath, "utf8"),
-    cacheControl: path.extname(absolutePath).toLowerCase() === ".html"
-      ? "no-cache"
-      : "public, max-age=300",
+    cacheControl: "no-cache",
     contentType: CONTENT_TYPES[path.extname(absolutePath).toLowerCase()] || "application/octet-stream",
     path: requestPath,
   };

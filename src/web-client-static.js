@@ -41,7 +41,7 @@ function serveWebClientRequest(req, res) {
 
   const body = fs.readFileSync(asset.filePath);
   res.writeHead(200, {
-    "cache-control": asset.isHtml ? "no-cache" : "public, max-age=300",
+    "cache-control": "no-cache",
     "content-length": body.length,
     "content-type": asset.contentType,
   });
@@ -79,7 +79,6 @@ function resolveWebClientAsset(pathname) {
   return {
     filePath,
     contentType: contentTypeForPath(filePath),
-    isHtml: path.extname(filePath).toLowerCase() === ".html",
   };
 }
 
