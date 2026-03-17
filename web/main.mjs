@@ -147,7 +147,7 @@ function mapElements() {
 
 function wireEvents() {
   elements.searchInput.addEventListener("input", (event) => { state.searchQuery = event.target.value.trim().toLowerCase(); renderSidebar(); });
-  elements.newChatButton.addEventListener("click", () => createLocalChat());
+  elements.newChatButton.addEventListener("click", () => { void createChat(); });
   elements.createBranchButton.addEventListener("click", createBranch);
   elements.sendButton.addEventListener("click", sendMessage);
   elements.composerInput.addEventListener("keydown", (event) => { if ((event.metaKey || event.ctrlKey) && event.key === "Enter") { event.preventDefault(); void sendMessage(); } });
@@ -255,9 +255,9 @@ function renderSidebar() {
     visibleWorkspaceCount += 1;
     const section = document.createElement("section");
     section.className = "folder-section";
-    section.innerHTML = '<div class="folder-heading"><div class="folder-label"><span class="folder-icon" aria-hidden="true"></span><span></span></div><button class="folder-plus" type="button">+</button></div><div class="chat-list"></div>';
+    section.innerHTML = '<div class="folder-heading"><div class="folder-label"><span class="folder-icon" aria-hidden="true"></span><span></span></div><button class="folder-plus" type="button">+ Thread</button></div><div class="chat-list"></div>';
     section.querySelector(".folder-label span:last-child").textContent = group.folder;
-    section.querySelector(".folder-plus").addEventListener("click", () => createLocalChat(group.folder));
+    section.querySelector(".folder-plus").addEventListener("click", () => { void createChat(group.folder); });
     const list = section.querySelector(".chat-list");
     for (const chat of chats) {
       const button = document.createElement("button");
@@ -494,7 +494,31 @@ function seedLogs() {
   }
 }
 
-function createLocalChat(folderName = selectedChat()?.repo || state.conversations[0]?.folder) {
+async function createChat(folderName = selectedChat()?.repo || state.conversations[0]?.folder) {
+  const draftChat = createLocalChat(folderName, { render: false });
+
+  if (!state.client) {
+    addLog("info", "Created a local draft thread.", folderName || "Workspace");
+    renderAll();
+    return draftChat;
+  }
+
+  try {
+    const threadResponse = await state.client.startThread(buildThreadStartParams(draftChat));
+    adoptRemoteThreadForChat(draftChat, threadResponse.thread);
+    draftChat.writable = true;
+    persistThreadCacheForChat(draftChat);
+    addLog("info", "Started a new remote thread.", draftChat.id);
+    await refreshThreadList(draftChat.threadId);
+    return findChatByThreadId(draftChat.threadId) || draftChat;
+  } catch (error) {
+    addLog("warn", "Fell back to a local draft because thread/start failed.", error.message || "thread/start");
+    renderAll();
+    return draftChat;
+  }
+}
+
+function createLocalChat(folderName = selectedChat()?.repo || state.conversations[0]?.folder, { render = true } = {}) {
   const fallbackGroup = state.conversations[0] || {
     folder: folderName || "Workspace",
     chats: [],
@@ -529,8 +553,11 @@ function createLocalChat(folderName = selectedChat()?.repo || state.conversation
   if (isNarrowViewport()) {
     state.mobileThreadOpen = true;
   }
-  addLog("info", "Created a new local draft thread.", group.folder);
-  renderAll();
+  if (render) {
+    addLog("info", "Created a new local draft thread.", group.folder);
+    renderAll();
+  }
+  return chat;
 }
 
 async function sendMessage() {
@@ -615,8 +642,6 @@ async function importPairingFile(event) {
       `Imported pairing from ${file.name}.`,
       { autoConnect: true }
     );
-    setScannerStatus("Connected. Closing scanner...");
-    window.setTimeout(closeScanner, 480);
   } catch (error) {
     setScannerStatus(error.message || "Import failed.");
     addLog("error", error.message || "Could not decode the selected file.", file.name);
@@ -675,8 +700,6 @@ async function startScanner() {
             "Captured pairing payload from the live scanner.",
             { autoConnect: true }
           );
-          setScannerStatus("Connected. Closing scanner...");
-          window.setTimeout(closeScanner, 480);
         } catch (error) {
           setScannerStatus(error.message || "Failed to connect after scanning.");
           addLog("error", error.message || "Failed to connect after scanning.", "scanner");
@@ -798,6 +821,10 @@ async function applyPairing(payload, note, { autoConnect = false } = {}) {
   renderAll();
   if (autoConnect) {
     await connectRelay();
+    if (state.connection.status === "ready") {
+      scanner.stop();
+      closeModal(elements.scannerModal);
+    }
   }
 }
 
@@ -1067,7 +1094,7 @@ function handleNotification(notification) {
   addLog("info", `Received ${method}.`, "notification");
   renderLogs();
 
-  if (method.startsWith("thread/") || method.startsWith("turn/")) {
+  if (method === "turn/completed" || method.startsWith("thread/")) {
     const threadId = notification.params?.threadId || notification.params?.thread?.id || notification.params?.thread?.threadId;
     scheduleRefresh(threadId || selectedChat()?.threadId || null);
   }
@@ -1624,6 +1651,9 @@ function applyReasoningDeltaNotification(params, method) {
   if (!threadId || !itemId || !delta) {
     return;
   }
+  if (method === "item/reasoning/textDelta" && delta.trim() === "Thinking...") {
+    return;
+  }
 
   const chat = findChatByThreadId(threadId);
   if (!chat) {
@@ -2046,9 +2076,6 @@ function isTransientMessage(message) {
   if (message.pending) {
     return true;
   }
-  if (message.kind === "command") {
-    return true;
-  }
   return message.time === "pending"
     || message.time === "thinking"
     || message.time === "streaming";
@@ -2314,19 +2341,26 @@ function renderMessageBubble(element, message) {
   }
 
   if (message?.kind === "command") {
+    const summaryText = message.summary || summarizeCommandForDisplay(message.command || "Command");
+    const previewText = message.preview || buildCommandPreview(message.rawOutput || message.text || "");
+    const rawContent = buildCommandRawContent(message);
+    if (!summaryText && !previewText && !rawContent) {
+      element.replaceChildren();
+      return;
+    }
+
     element.classList.add("command-bubble");
 
     const summary = document.createElement("div");
     summary.className = "command-summary";
-    summary.textContent = message.summary || summarizeCommandForDisplay(message.command || "Command");
+    summary.textContent = summaryText;
 
     const preview = document.createElement("pre");
     preview.className = "command-preview";
-    preview.textContent = message.preview || buildCommandPreview(message.rawOutput || message.text || "");
+    preview.textContent = previewText;
 
     element.replaceChildren(summary, preview);
 
-    const rawContent = buildCommandRawContent(message);
     if (rawContent) {
       const details = document.createElement("details");
       details.className = "command-details";

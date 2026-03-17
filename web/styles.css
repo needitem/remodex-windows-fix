@@ -633,15 +633,19 @@ h2 {
 }
 
 .folder-plus {
-  display: grid;
-  place-items: center;
-  width: 32px;
-  height: 32px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  min-height: 32px;
+  padding: 0 12px;
   border: 0;
-  border-radius: 50%;
+  border-radius: 999px;
   background: rgba(17, 24, 39, 0.05);
   color: var(--muted-strong);
-  font-size: 1.15rem;
+  font-size: 0.82rem;
+  font-weight: 700;
+  letter-spacing: 0.02em;
+  white-space: nowrap;
 }
 
 .chat-list {
