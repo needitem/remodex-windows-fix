@@ -11,7 +11,7 @@ const state = {
   capabilities: collectBrowserCapabilities(window, navigator),
   client: null,
   connection: { detail: "Load a QR or pairing JSON to connect the browser client.", label: "Waiting for pairing", status: "warning" },
-  conversations: structuredClone(DEFAULT_CONVERSATIONS),
+  conversations: cloneConversations(DEFAULT_CONVERSATIONS),
   logs: [],
   pairingPayload: loadStoredPairingPayload(),
   preferences: loadPreferences({ accessOptions: ACCESS_OPTIONS, modelOptions: MODEL_OPTIONS, reasoningOptions: REASONING_OPTIONS, speedOptions: SPEED_OPTIONS }),
@@ -38,6 +38,7 @@ function mapElements() {
     accessSelect: document.querySelector("#access-select"),
     body: document.body,
     branchSelect: document.querySelector("#branch-select"),
+    cameraCaptureInput: document.querySelector("#camera-capture-input"),
     clearPairingButton: document.querySelector("#clear-pairing-button"),
     closeScannerButton: document.querySelector("#close-scanner-button"),
     closeSettingsButton: document.querySelector("#close-settings-button"),
@@ -117,6 +118,7 @@ function wireEvents() {
   elements.scannerModal.addEventListener("click", (event) => { if (event.target === elements.scannerModal) { closeScanner(); } });
   elements.scannerStartButton.addEventListener("click", startScanner);
   elements.scannerImportButton.addEventListener("click", () => elements.pairingFileInput.click());
+  elements.cameraCaptureInput.addEventListener("change", importPairingFile);
   elements.importFileButton.addEventListener("click", () => elements.pairingFileInput.click());
   elements.pairingFileInput.addEventListener("change", importPairingFile);
   elements.loadPairingButton.addEventListener("click", loadPairingFromTextarea);
@@ -417,6 +419,7 @@ async function startScanner() {
     return;
   }
 
+  elements.scannerStatus.textContent = "Requesting camera permission...";
   try {
     scanner.stop();
     await scanner.start({
@@ -436,8 +439,13 @@ async function startScanner() {
     addLog("info", "Started the camera scanner.", "scanner");
     renderLogs();
   } catch (error) {
-    elements.scannerStatus.textContent = error.message || "Could not start the camera.";
+    elements.scannerStatus.textContent = `${error.message || "Could not start the camera."} Safari can still use the camera-photo fallback.`;
     addLog("error", "Failed to start the camera scanner.", error.message || "scanner");
+    if (elements.cameraCaptureInput) {
+      window.setTimeout(() => {
+        elements.cameraCaptureInput.click();
+      }, 50);
+    }
     renderLogs();
   }
 }
@@ -761,5 +769,12 @@ function truncate(value, maxLength) {
 }
 
 function escapeHTML(value) {
-  return String(value).replaceAll("&", "&amp;").replaceAll("<", "&lt;").replaceAll(">", "&gt;");
+  return String(value)
+    .replace(/&/g, "&amp;")
+    .replace(/</g, "&lt;")
+    .replace(/>/g, "&gt;");
+}
+
+function cloneConversations(value) {
+  return JSON.parse(JSON.stringify(value));
 }
