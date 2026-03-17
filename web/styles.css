@@ -466,6 +466,10 @@ h2 {
   min-width: 0;
 }
 
+.conversation-header-left > div:last-child {
+  min-width: 0;
+}
+
 .nav-button {
   display: inline-flex;
   align-items: center;
@@ -495,6 +499,7 @@ h2 {
   margin-top: 8px;
   color: var(--muted);
   font-size: 0.96rem;
+  overflow-wrap: anywhere;
 }
 
 .conversation-header-actions {
@@ -524,6 +529,7 @@ h2 {
   gap: 10px;
   max-width: min(900px, 100%);
   min-width: 0;
+  width: 100%;
 }
 
 .message-card.user {
@@ -538,6 +544,7 @@ h2 {
   font-size: 0.82rem;
   font-weight: 600;
   letter-spacing: 0.02em;
+  overflow-wrap: anywhere;
 }
 
 .message-bubble {
@@ -550,6 +557,7 @@ h2 {
   word-break: break-word;
   overflow-wrap: anywhere;
   box-shadow: 0 14px 30px rgba(15, 23, 42, 0.06);
+  max-width: 100%;
 }
 
 .message-card.user .message-bubble {
@@ -1095,6 +1103,10 @@ body.sidebar-open {
     align-items: center;
   }
 
+  .conversation-header-left > div:last-child {
+    flex: 1 1 auto;
+  }
+
   .thread-subtitle {
     font-size: 0.82rem;
     line-height: 1.4;
@@ -1108,12 +1120,15 @@ body.sidebar-open {
 
   .message-card {
     max-width: 100%;
+    width: 100%;
   }
 
   .message-bubble {
     border-radius: 22px;
     font-size: 0.92rem;
     line-height: 1.56;
+    width: 100%;
+    max-width: calc(100vw - 36px);
   }
 
   .composer-shell {
@@ -1178,6 +1193,8 @@ body.sidebar-open {
 
   h2 {
     font-size: 1.06rem;
+    line-height: 1.22;
+    overflow-wrap: anywhere;
   }
 
   .conversation-header-actions,
@@ -1255,6 +1272,11 @@ body.sidebar-open {
 
   .message-meta {
     font-size: 0.74rem;
+  }
+
+  .nav-button {
+    display: inline-flex;
+    align-self: flex-start;
   }
 
   .header-chip {
