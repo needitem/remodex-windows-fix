@@ -13,6 +13,15 @@ const state = {
   connection: { detail: "Load a QR or pairing JSON to connect the browser client.", label: "Waiting for pairing", status: "warning" },
   conversations: [],
   logs: [],
+  modelCatalog: MODEL_OPTIONS.map((value) => ({
+    defaultReasoningEffort: "medium",
+    displayName: value,
+    isDefault: false,
+    model: value,
+    supportedReasoningEfforts: [
+      { description: "Balanced", reasoningEffort: "medium" },
+    ],
+  })),
   pairingPayload: loadStoredPairingPayload(),
   preferences: loadPreferences({ accessOptions: ACCESS_OPTIONS, modelOptions: MODEL_OPTIONS, reasoningOptions: REASONING_OPTIONS, speedOptions: SPEED_OPTIONS }),
   relayOverride: loadStoredRelayOverride(),
@@ -98,8 +107,19 @@ function wireEvents() {
   elements.newChatButton.addEventListener("click", () => createLocalChat());
   elements.sendButton.addEventListener("click", sendMessage);
   elements.composerInput.addEventListener("keydown", (event) => { if ((event.metaKey || event.ctrlKey) && event.key === "Enter") { event.preventDefault(); void sendMessage(); } });
-  elements.repoSelect.addEventListener("change", (event) => mutateSelectedChat((chat) => { chat.repo = event.target.value; chat.branch = (REPOSITORY_BRANCHES[chat.repo] || ["main"])[0]; }));
-  elements.branchSelect.addEventListener("change", (event) => mutateSelectedChat((chat) => { chat.branch = event.target.value; }));
+  elements.repoSelect.addEventListener("change", (event) => mutateSelectedChat(async (chat) => {
+    const nextRepo = event.target.value;
+    const repoInfo = representativeThreadInfo(nextRepo);
+    chat.repo = nextRepo;
+    chat.branch = repoInfo?.branch || (REPOSITORY_BRANCHES[nextRepo] || ["main"])[0];
+    chat.cwd = repoInfo?.cwd || chat.cwd || null;
+    chat.originUrl = repoInfo?.originUrl || chat.originUrl || null;
+    await syncThreadMetadata(chat);
+  }));
+  elements.branchSelect.addEventListener("change", (event) => mutateSelectedChat(async (chat) => {
+    chat.branch = event.target.value;
+    await syncThreadMetadata(chat);
+  }));
   elements.accessSelect.addEventListener("change", (event) => mutateSelectedChat((chat) => { chat.access = event.target.value; state.preferences.access = event.target.value; persistPreferences(); }));
   bindPreferenceSelect(elements.modelSelect, "model");
   bindPreferenceSelect(elements.reasoningSelect, "reasoning");
@@ -153,11 +173,17 @@ function renderBody() {
 }
 
 function renderSelects() {
-  setOptions(elements.modelSelect, MODEL_OPTIONS, state.preferences.model);
-  setOptions(elements.reasoningSelect, REASONING_OPTIONS, state.preferences.reasoning);
+  const modelOptions = state.modelCatalog.map((entry) => ({
+    label: entry.displayName,
+    value: entry.model,
+  }));
+  const reasoningOptions = currentReasoningOptions();
+
+  setOptionEntries(elements.modelSelect, modelOptions, state.preferences.model);
+  setOptionEntries(elements.reasoningSelect, reasoningOptions, state.preferences.reasoning);
   setOptions(elements.speedSelect, SPEED_OPTIONS, state.preferences.speed);
-  setOptions(elements.settingsModelSelect, MODEL_OPTIONS, state.preferences.model);
-  setOptions(elements.settingsReasoningSelect, REASONING_OPTIONS, state.preferences.reasoning);
+  setOptionEntries(elements.settingsModelSelect, modelOptions, state.preferences.model);
+  setOptionEntries(elements.settingsReasoningSelect, reasoningOptions, state.preferences.reasoning);
   setOptions(elements.settingsSpeedSelect, SPEED_OPTIONS, state.preferences.speed);
   setOptions(elements.settingsAccessSelect, ACCESS_OPTIONS, state.preferences.access);
   setOptions(elements.repoSelect, state.conversations.map((group) => group.folder));
@@ -346,6 +372,7 @@ async function sendMessage() {
   }
 
   chat.messages.push({ role: "user", author: "You", time: "now", text });
+  chat.messages.push({ role: "assistant", author: "Codex", time: "pending", text: "Sending to Codex..." });
   chat.snippet = text;
   chat.timestamp = "now";
   chat.access = elements.accessSelect.value;
@@ -364,6 +391,7 @@ async function sendMessage() {
       chat.threadId = threadResponse.thread.id;
       chat.id = threadResponse.thread.id;
       chat.cwd = threadResponse.thread.cwd;
+      chat.originUrl = threadResponse.thread.gitInfo?.originUrl || null;
       chat.repo = repoLabelFromThread(threadResponse.thread);
       chat.branch = threadResponse.thread.gitInfo?.branch || chat.branch;
       chat.title = threadResponse.thread.name || threadResponse.thread.preview || chat.title;
@@ -378,13 +406,14 @@ async function sendMessage() {
 
     await state.client.startTurn({
       approvalPolicy: approvalPolicyForAccess(chat.access),
-      effort: effortForReasoning(state.preferences.reasoning),
+      cwd: chat.cwd || null,
+      effort: state.preferences.reasoning || undefined,
       input: [{ text, type: "text" }],
       model: state.preferences.model,
       threadId: chat.threadId,
     });
 
-    scheduleRefresh(chat.threadId);
+    await pollThreadUntilSettled(chat.threadId);
   } catch (error) {
     addLog("error", error.message || "Failed to send the turn.", "turn/start");
     renderLogs();
@@ -542,6 +571,7 @@ async function connectRelay() {
     addLog("info", "Connecting to relay.", relayBaseUrl);
     renderLogs();
     await state.client.connect();
+    await refreshModelCatalog();
     await refreshThreadList();
   } catch (error) {
     state.connection = { detail: error.message || "Failed to initialize the browser client.", label: "Connect failed", status: "error" };
@@ -603,13 +633,31 @@ function persistPreferences() {
   savePreferences(state.preferences);
 }
 
-function mutateSelectedChat(mutate) {
+async function mutateSelectedChat(mutate) {
   const chat = selectedChat();
   if (!chat) {
     return;
   }
-  mutate(chat);
+  await mutate(chat);
   renderAll();
+}
+
+async function syncThreadMetadata(chat) {
+  if (!state.client || !chat?.threadId) {
+    return;
+  }
+
+  try {
+    const result = await state.client.updateThreadMetadata(chat.threadId, {
+      branch: chat.branch || null,
+      originUrl: chat.originUrl || null,
+    });
+    chat.branch = result.thread.gitInfo?.branch || chat.branch;
+    chat.originUrl = result.thread.gitInfo?.originUrl || chat.originUrl;
+  } catch (error) {
+    addLog("error", error.message || "Failed to sync thread metadata.", "thread/metadataUpdate");
+    renderLogs();
+  }
 }
 
 function selectedChat() {
@@ -640,6 +688,28 @@ async function refreshThreadList(preferredThreadId = state.selectedChatId) {
   }
 }
 
+async function refreshModelCatalog() {
+  if (!state.client) {
+    return;
+  }
+
+  const response = await state.client.listModels();
+  const visibleModels = (response.data || []).filter((entry) => !entry.hidden);
+  if (!visibleModels.length) {
+    return;
+  }
+
+  state.modelCatalog = visibleModels;
+  const currentModel = visibleModels.find((entry) => entry.model === state.preferences.model) || visibleModels.find((entry) => entry.isDefault) || visibleModels[0];
+  state.preferences.model = currentModel.model;
+  const supportedEfforts = currentModel.supportedReasoningEfforts.map((entry) => entry.reasoningEffort);
+  state.preferences.reasoning = supportedEfforts.includes(state.preferences.reasoning)
+    ? state.preferences.reasoning
+    : currentModel.defaultReasoningEffort;
+  persistPreferences();
+  renderSelects();
+}
+
 async function readRemoteThread(threadId) {
   if (!state.client) {
     return;
@@ -651,6 +721,27 @@ async function readRemoteThread(threadId) {
   }
   hydrateChatFromThread(chat, result.thread);
   renderAll();
+}
+
+async function pollThreadUntilSettled(threadId, attemptsRemaining = 10) {
+  if (!threadId || !state.client) {
+    return;
+  }
+
+  const result = await state.client.readThread(threadId);
+  const chat = findChatByThreadId(threadId);
+  if (chat) {
+    hydrateChatFromThread(chat, result.thread);
+    renderAll();
+  }
+
+  const latestTurn = result.thread?.turns?.[result.thread.turns.length - 1];
+  if (!latestTurn || latestTurn.status !== "inProgress" || attemptsRemaining <= 1) {
+    return;
+  }
+
+  await new Promise((resolve) => setTimeout(resolve, 900));
+  await pollThreadUntilSettled(threadId, attemptsRemaining - 1);
 }
 
 function handleNotification(notification) {
@@ -699,6 +790,7 @@ function threadToChat(thread) {
     id: thread.id,
     messages: extractMessagesFromThread(thread),
     messagesLoaded: false,
+    originUrl: thread.gitInfo?.originUrl || null,
     repo: repoLabelFromThread(thread),
     snippet: thread.preview || "No preview",
     threadId: thread.id,
@@ -712,6 +804,7 @@ function hydrateChatFromThread(chat, thread) {
   chat.cwd = thread.cwd;
   chat.messages = extractMessagesFromThread(thread);
   chat.messagesLoaded = true;
+  chat.originUrl = thread.gitInfo?.originUrl || chat.originUrl || null;
   chat.repo = repoLabelFromThread(thread);
   chat.snippet = thread.preview || chat.snippet;
   chat.timestamp = relativeTimeFromUnix(thread.updatedAt);
@@ -738,7 +831,7 @@ function extractMessagesFromThread(thread) {
 }
 
 function buildThreadStartParams(chat) {
-  const representativeCwd = guessCwdForRepo(chat.repo);
+  const representativeCwd = chat.cwd || guessCwdForRepo(chat.repo);
   return {
     approvalPolicy: approvalPolicyForAccess(chat.access),
     cwd: representativeCwd,
@@ -768,14 +861,7 @@ function effortForReasoning(reasoning) {
 }
 
 function guessCwdForRepo(repo) {
-  for (const group of state.conversations) {
-    for (const chat of group.chats) {
-      if (chat.repo === repo && chat.cwd) {
-        return chat.cwd;
-      }
-    }
-  }
-  return null;
+  return representativeThreadInfo(repo)?.cwd || null;
 }
 
 function findChatByThreadId(threadId) {
@@ -783,6 +869,21 @@ function findChatByThreadId(threadId) {
     const chat = group.chats.find((candidate) => candidate.threadId === threadId || candidate.id === threadId);
     if (chat) {
       return chat;
+    }
+  }
+  return null;
+}
+
+function representativeThreadInfo(repo) {
+  for (const group of state.conversations) {
+    for (const chat of group.chats) {
+      if (chat.repo === repo && (chat.cwd || chat.originUrl || chat.branch)) {
+        return {
+          branch: chat.branch,
+          cwd: chat.cwd || null,
+          originUrl: chat.originUrl || null,
+        };
+      }
     }
   }
   return null;
@@ -828,6 +929,32 @@ function setOptions(select, values, selectedValue = select.value) {
   }
 }
 
+function setOptionEntries(select, entries, selectedValue = select.value) {
+  select.replaceChildren(...entries.map((entry) => {
+    const option = document.createElement("option");
+    option.value = entry.value;
+    option.textContent = entry.label;
+    return option;
+  }));
+  if (entries.some((entry) => entry.value === selectedValue)) {
+    select.value = selectedValue;
+  } else if (entries[0]) {
+    select.value = entries[0].value;
+  }
+}
+
+function currentReasoningOptions() {
+  const selectedModel = state.modelCatalog.find((entry) => entry.model === state.preferences.model) || state.modelCatalog[0];
+  if (!selectedModel) {
+    return REASONING_OPTIONS.map((value) => ({ label: value, value }));
+  }
+
+  return selectedModel.supportedReasoningEfforts.map((entry) => ({
+    label: labelForReasoningEffort(entry.reasoningEffort),
+    value: entry.reasoningEffort,
+  }));
+}
+
 function addLog(level, message, meta = new Date().toLocaleTimeString()) {
   state.logs.unshift({ level, message, meta });
   state.logs = state.logs.slice(0, 8);
@@ -835,6 +962,25 @@ function addLog(level, message, meta = new Date().toLocaleTimeString()) {
 
 function isNarrowViewport() {
   return window.matchMedia("(max-width: 920px)").matches;
+}
+
+function labelForReasoningEffort(value) {
+  switch (value) {
+    case "xhigh":
+      return "Extra High";
+    case "high":
+      return "High";
+    case "medium":
+      return "Balanced";
+    case "low":
+      return "Low";
+    case "minimal":
+      return "Minimal";
+    case "none":
+      return "None";
+    default:
+      return value;
+  }
 }
 
 function scrollConversationToBottom() {

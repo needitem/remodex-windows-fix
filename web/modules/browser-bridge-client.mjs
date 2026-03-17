@@ -14,6 +14,7 @@ export function createBrowserBridgeClient({
   const secureTransport = createBrowserSecureTransport({ pairingPayload });
   const pendingRequests = new Map();
   let initialized = false;
+  let isManualDisconnect = false;
   let nextRequestId = 1;
   let socket = null;
 
@@ -26,6 +27,7 @@ export function createBrowserBridgeClient({
 
   return {
     async connect() {
+      isManualDisconnect = false;
       socket = new WebSocket(buildBrowserRelaySocketUrl(relayBaseUrl || pairingPayload?.relay, pairingPayload?.sessionId));
       secureTransport.bindLiveSendWireMessage((wireMessage) => {
         if (socket?.readyState === WebSocket.OPEN) {
@@ -34,6 +36,11 @@ export function createBrowserBridgeClient({
       });
 
       socket.addEventListener("close", (event) => {
+        if (isManualDisconnect) {
+          isManualDisconnect = false;
+          onConnectionState({ detail: "Pairing remains stored locally.", label: "Disconnected", status: "warning" });
+          return;
+        }
         rejectAllPending(event.reason || "Socket closed by the relay.");
         rejectSecure(new Error(event.reason || "Socket closed by the relay."));
         rejectReady(new Error(event.reason || "Socket closed by the relay."));
@@ -70,6 +77,7 @@ export function createBrowserBridgeClient({
       return readyPromise;
     },
     async disconnect() {
+      isManualDisconnect = true;
       rejectAllPending("Disconnected by user.");
       socket?.close(1000, "Disconnected by user");
       socket = null;
@@ -87,6 +95,10 @@ export function createBrowserBridgeClient({
       await readyPromise;
       return request("thread/read", { includeTurns: true, threadId });
     },
+    async listModels(params = {}) {
+      await readyPromise;
+      return request("model/list", params);
+    },
     async startThread(params = {}) {
       await readyPromise;
       return request("thread/start", params);
@@ -94,6 +106,10 @@ export function createBrowserBridgeClient({
     async startTurn(params = {}) {
       await readyPromise;
       return request("turn/start", params);
+    },
+    async updateThreadMetadata(threadId, gitInfo = null) {
+      await readyPromise;
+      return request("thread/metadata/update", { gitInfo, threadId });
     },
     getHandshakeSummary() {
       return secureTransport.getHandshakeSummary();
