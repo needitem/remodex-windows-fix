@@ -3,7 +3,7 @@ import { createBrowserBridgeClient } from "./modules/browser-bridge-client.mjs";
 import { collectBrowserCapabilities } from "./modules/capabilities.mjs";
 import { decodePairingPayloadFromFile, describePairingPayload, parsePairingPayload } from "./modules/pairing.mjs";
 import { clearStoredPairingPayload, loadStoredPairingPayload, loadStoredRelayOverride, saveStoredPairingPayload, saveStoredRelayOverride } from "./modules/storage.mjs";
-import { ACCESS_OPTIONS, DEFAULT_CONVERSATIONS, MODEL_OPTIONS, REASONING_OPTIONS, REPOSITORY_BRANCHES, SPEED_OPTIONS } from "./modules/mock-data.mjs";
+import { ACCESS_OPTIONS, MODEL_OPTIONS, REASONING_OPTIONS, REPOSITORY_BRANCHES, SPEED_OPTIONS } from "./modules/mock-data.mjs";
 import { loadPreferences, savePreferences } from "./modules/preferences.mjs";
 import { createScannerController } from "./modules/scanner-controller.mjs";
 
@@ -11,13 +11,13 @@ const state = {
   capabilities: collectBrowserCapabilities(window, navigator),
   client: null,
   connection: { detail: "Load a QR or pairing JSON to connect the browser client.", label: "Waiting for pairing", status: "warning" },
-  conversations: cloneConversations(DEFAULT_CONVERSATIONS),
+  conversations: [],
   logs: [],
   pairingPayload: loadStoredPairingPayload(),
   preferences: loadPreferences({ accessOptions: ACCESS_OPTIONS, modelOptions: MODEL_OPTIONS, reasoningOptions: REASONING_OPTIONS, speedOptions: SPEED_OPTIONS }),
   relayOverride: loadStoredRelayOverride(),
   searchQuery: "",
-  selectedChatId: "remodex-pull",
+  selectedChatId: null,
   sidebarOpen: false,
   mobileThreadOpen: false,
 };
@@ -165,11 +165,13 @@ function renderSelects() {
 
 function renderSidebar() {
   const fragment = document.createDocumentFragment();
+  let hasChats = false;
   for (const group of state.conversations) {
     const chats = group.chats.filter((chat) => [chat.title, chat.snippet, chat.repo].join(" ").toLowerCase().includes(state.searchQuery));
     if (!chats.length) {
       continue;
     }
+    hasChats = true;
     const section = document.createElement("section");
     section.className = "folder-section";
     section.innerHTML = '<div class="folder-heading"><div class="folder-label"><span class="folder-icon" aria-hidden="true"></span><span></span></div><button class="folder-plus" type="button">+</button></div><div class="chat-list"></div>';
@@ -196,17 +198,37 @@ function renderSidebar() {
     }
     fragment.append(section);
   }
+  if (!hasChats) {
+    const emptyState = document.createElement("section");
+    emptyState.className = "empty-panel";
+    emptyState.innerHTML = `
+      <p class="empty-kicker">No Chats Yet</p>
+      <h3>Connect the bridge to load your real threads</h3>
+      <p>Pair the browser client, then your actual Remodex thread list will appear here instead of demo content.</p>
+    `;
+    fragment.append(emptyState);
+  }
   elements.folderList.replaceChildren(fragment);
 }
 
 function renderConversation() {
   const chat = selectedChat();
   if (!chat) {
+    elements.threadRepoLabel.textContent = "Remodex";
+    elements.threadTitle.textContent = "No thread selected";
+    elements.threadSubtitle.textContent = "Connect the relay and pick a real thread from the chat list.";
+    elements.messageList.innerHTML = `
+      <section class="empty-panel empty-panel-conversation">
+        <p class="empty-kicker">Conversation</p>
+        <h3>Real threads show up here</h3>
+        <p>Once the browser client connects and loads your thread list, the latest thread opens here by default.</p>
+      </section>
+    `;
     return;
   }
   elements.threadRepoLabel.textContent = chat.repo;
   elements.threadTitle.textContent = chat.title;
-  elements.threadSubtitle.textContent = `Branch ${chat.branch} • ${chat.access} • ${state.connection.label}`;
+  elements.threadSubtitle.textContent = `Branch ${chat.branch} | ${chat.access} | ${state.connection.label}`;
   setOptions(elements.branchSelect, REPOSITORY_BRANCHES[chat.repo] || [chat.branch || "main"], chat.branch);
   elements.repoSelect.value = chat.repo;
   elements.accessSelect.value = chat.access;
@@ -215,12 +237,12 @@ function renderConversation() {
   for (const message of chat.messages) {
     const card = document.createElement("article");
     card.className = `message-card ${message.role === "user" ? "user" : "assistant"}`;
-    card.innerHTML = `<div class="message-meta">${escapeHTML(message.author)} • ${escapeHTML(message.time)}</div><div class="message-bubble"></div>`;
+    card.innerHTML = `<div class="message-meta">${escapeHTML(message.author)} | ${escapeHTML(message.time)}</div><div class="message-bubble"></div>`;
     card.querySelector(".message-bubble").textContent = message.text;
     fragment.append(card);
   }
   elements.messageList.replaceChildren(fragment);
-  elements.messageList.scrollTop = elements.messageList.scrollHeight;
+  scrollConversationToBottom();
 }
 
 function renderPairing() {
@@ -243,7 +265,7 @@ function renderPairing() {
 function renderConnection() {
   elements.connectionLabel.textContent = state.connection.label;
   elements.connectionMeta.textContent = state.pairingPayload
-    ? `${state.connection.detail} Session ${truncate(state.pairingPayload.sessionId, 18)} • ${truncate(state.relayOverride || state.pairingPayload.relay, 34)}`
+    ? `${state.connection.detail} Session ${truncate(state.pairingPayload.sessionId, 18)} | ${truncate(state.relayOverride || state.pairingPayload.relay, 34)}`
     : state.connection.detail;
   elements.connectionDot.className = "connection-dot";
   elements.connectionDot.classList.add(`state-${state.connection.status}`);
@@ -280,7 +302,14 @@ function seedLogs() {
 }
 
 function createLocalChat(folderName = selectedChat()?.repo || state.conversations[0]?.folder) {
-  const group = state.conversations.find((candidate) => candidate.folder === folderName) || state.conversations[0];
+  const fallbackGroup = state.conversations[0] || {
+    folder: folderName || "Workspace",
+    chats: [],
+  };
+  if (!state.conversations.length) {
+    state.conversations.push(fallbackGroup);
+  }
+  const group = state.conversations.find((candidate) => candidate.folder === folderName) || fallbackGroup;
   const chat = {
     id: `local-${Date.now()}`,
     title: "New Chat",
@@ -806,6 +835,16 @@ function addLog(level, message, meta = new Date().toLocaleTimeString()) {
 
 function isNarrowViewport() {
   return window.matchMedia("(max-width: 920px)").matches;
+}
+
+function scrollConversationToBottom() {
+  const scrollToBottom = () => {
+    elements.messageList.scrollTop = elements.messageList.scrollHeight;
+  };
+
+  scrollToBottom();
+  window.requestAnimationFrame(scrollToBottom);
+  window.setTimeout(scrollToBottom, 40);
 }
 
 function truncate(value, maxLength) {
