@@ -9,6 +9,12 @@ const path = require("path");
 
 const WEB_ROOT = path.resolve(__dirname, "..", "web");
 const OUTPUT_FILE = path.resolve(__dirname, "..", "cloudflare", "web-assets.generated.mjs");
+const EXTRA_ASSETS = [
+  {
+    absolutePath: path.resolve(__dirname, "..", "node_modules", "jsqr", "dist", "jsQR.js"),
+    requestPath: "/app/vendor/jsqr.js",
+  },
+];
 
 const CONTENT_TYPES = {
   ".css": "text/css; charset=utf-8",
@@ -20,18 +26,14 @@ const CONTENT_TYPES = {
   ".webmanifest": "application/manifest+json; charset=utf-8",
 };
 
-const assets = collectAssets(WEB_ROOT).map((absolutePath) => {
-  const relativePath = path.relative(WEB_ROOT, absolutePath).replace(/\\/g, "/");
-  const requestPath = relativePath === "index.html" ? "/app/" : `/app/${relativePath}`;
-  return {
-    body: fs.readFileSync(absolutePath, "utf8"),
-    cacheControl: path.extname(absolutePath).toLowerCase() === ".html"
-      ? "no-cache"
-      : "public, max-age=300",
-    contentType: CONTENT_TYPES[path.extname(absolutePath).toLowerCase()] || "application/octet-stream",
-    path: requestPath,
-  };
-});
+const assets = [
+  ...collectAssets(WEB_ROOT).map((absolutePath) => {
+    const relativePath = path.relative(WEB_ROOT, absolutePath).replace(/\\/g, "/");
+    const requestPath = relativePath === "index.html" ? "/app/" : `/app/${relativePath}`;
+    return buildAssetRecord(absolutePath, requestPath);
+  }),
+  ...EXTRA_ASSETS.map((entry) => buildAssetRecord(entry.absolutePath, entry.requestPath)),
+];
 
 const output = [
   "// FILE: web-assets.generated.mjs",
@@ -46,6 +48,17 @@ const output = [
 
 fs.writeFileSync(OUTPUT_FILE, output, "utf8");
 console.log(`[remodex] Generated Cloudflare web asset map at ${OUTPUT_FILE}`);
+
+function buildAssetRecord(absolutePath, requestPath) {
+  return {
+    body: fs.readFileSync(absolutePath, "utf8"),
+    cacheControl: path.extname(absolutePath).toLowerCase() === ".html"
+      ? "no-cache"
+      : "public, max-age=300",
+    contentType: CONTENT_TYPES[path.extname(absolutePath).toLowerCase()] || "application/octet-stream",
+    path: requestPath,
+  };
+}
 
 function collectAssets(rootDir) {
   const entries = fs.readdirSync(rootDir, { withFileTypes: true });

@@ -1,3 +1,5 @@
+import { decodePairingPayloadTextFromImageFile } from "./qr-decoder.mjs";
+
 const REQUIRED_PAIRING_KEYS = [
   "v",
   "relay",
@@ -50,23 +52,11 @@ export async function decodePairingPayloadFromFile(file, windowLike = window) {
 }
 
 export async function decodePairingPayloadFromImage(file, windowLike = window) {
-  if (!("BarcodeDetector" in windowLike)) {
-    throw new Error("This browser cannot decode QR images. Import the pairing JSON instead.");
+  const decodedPayloadText = await decodePairingPayloadTextFromImageFile(file, { windowLike });
+  if (!decodedPayloadText) {
+    throw new Error("No QR code was found in the selected image.");
   }
-
-  const detector = new windowLike.BarcodeDetector({ formats: ["qr_code"] });
-  const bitmap = await windowLike.createImageBitmap(file);
-
-  try {
-    const barcodes = await detector.detect(bitmap);
-    if (!barcodes.length || !barcodes[0].rawValue) {
-      throw new Error("No QR code was found in the selected image.");
-    }
-
-    return parsePairingPayload(barcodes[0].rawValue);
-  } finally {
-    bitmap.close?.();
-  }
+  return parsePairingPayload(decodedPayloadText);
 }
 
 export function describePairingPayload(pairingPayload) {

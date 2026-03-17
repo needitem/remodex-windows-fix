@@ -1,10 +1,11 @@
-const CACHE_NAME = "remodex-web-deck-v1";
+const CACHE_NAME = "remodex-web-deck-v2";
 const APP_SHELL_URLS = [
   "/app/",
   "/app/styles.css",
   "/app/main.mjs",
   "/app/manifest.webmanifest",
   "/app/icon.svg",
+  "/app/vendor/jsqr.js",
   "/app/modules/browser-relay-client.mjs",
   "/app/modules/browser-bridge-client.mjs",
   "/app/modules/browser-secure-transport.mjs",
@@ -12,6 +13,7 @@ const APP_SHELL_URLS = [
   "/app/modules/mock-data.mjs",
   "/app/modules/pairing.mjs",
   "/app/modules/preferences.mjs",
+  "/app/modules/qr-decoder.mjs",
   "/app/modules/scanner-controller.mjs",
   "/app/modules/storage.mjs",
 ];

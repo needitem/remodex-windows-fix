@@ -1,10 +1,12 @@
+import { decodePairingPayloadTextFromVideo } from "./qr-decoder.mjs";
+
 export function createScannerController({
   navigatorLike = navigator,
   videoElement,
   windowLike = window,
 } = {}) {
   const state = {
-    detector: null,
+    canvas: null,
     rafId: 0,
     stream: null,
   };
@@ -13,11 +15,6 @@ export function createScannerController({
     if (!navigatorLike.mediaDevices?.getUserMedia) {
       throw new Error("Camera access is unavailable in this browser.");
     }
-    if (!("BarcodeDetector" in windowLike)) {
-      throw new Error("BarcodeDetector is unavailable. Import the QR image instead.");
-    }
-
-    state.detector = new windowLike.BarcodeDetector({ formats: ["qr_code"] });
     state.stream = await navigatorLike.mediaDevices.getUserMedia({
       video: {
         facingMode: { ideal: "environment" },
@@ -40,22 +37,25 @@ export function createScannerController({
       }
     }
     state.stream = null;
-    state.detector = null;
+    state.canvas = null;
     videoElement.pause();
     videoElement.srcObject = null;
   }
 
   async function loop({ onDetect, onError, onStatus }) {
-    if (!state.stream || !state.detector) {
+    if (!state.stream) {
       return;
     }
 
     try {
       if (videoElement.readyState >= 2) {
-        const codes = await state.detector.detect(videoElement);
-        if (codes.length && codes[0].rawValue) {
+        const rawValue = await decodePairingPayloadTextFromVideo(videoElement, {
+          canvas: state.canvas || (state.canvas = windowLike.document.createElement("canvas")),
+          windowLike,
+        });
+        if (rawValue) {
           onStatus?.("QR detected.");
-          onDetect?.(codes[0].rawValue);
+          onDetect?.(rawValue);
           return;
         }
       }

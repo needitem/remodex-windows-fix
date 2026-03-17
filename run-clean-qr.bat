@@ -13,7 +13,7 @@ set "PAIRING_PNG=%USERPROFILE%\.remodex\pairing-qr.png"
 
 echo [remodex] Relay: %RELAY_URL%
 echo [remodex] Stopping existing Remodex bridge processes...
-powershell -NoProfile -Command "Get-CimInstance Win32_Process | Where-Object { $_.Name -eq 'node.exe' -and $_.CommandLine -like '*remodex-windows-fix*' } | ForEach-Object { Stop-Process -Id $_.ProcessId -Force }" >nul 2>&1
+powershell -NoProfile -Command "$bridges = @(Get-CimInstance Win32_Process | Where-Object { $_.Name -eq 'node.exe' -and $_.CommandLine -like '*bin\remodex.js* up*' }); $bridgeIds = @($bridges | ForEach-Object { $_.ProcessId }); Get-CimInstance Win32_Process | Where-Object { $_.Name -eq 'node.exe' -and $_.CommandLine -like '*codex.js* app-server*' -and $bridgeIds -contains $_.ParentProcessId } | ForEach-Object { Stop-Process -Id $_.ProcessId -Force }; $bridges | ForEach-Object { Stop-Process -Id $_.ProcessId -Force }" >nul 2>&1
 
 echo [remodex] Resetting saved pairing state...
 set "REMODEX_RELAY=%RELAY_URL%"

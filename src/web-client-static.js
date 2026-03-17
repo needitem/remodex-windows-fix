@@ -9,6 +9,12 @@ const path = require("path");
 
 const WEB_ROUTE_PREFIX = "/app";
 const WEB_CLIENT_ROOT = path.resolve(__dirname, "..", "web");
+const WEB_VENDOR_ASSETS = new Map([
+  [
+    "/app/vendor/jsqr.js",
+    path.resolve(__dirname, "..", "node_modules", "jsqr", "dist", "jsQR.js"),
+  ],
+]);
 
 const CONTENT_TYPES = {
   ".css": "text/css; charset=utf-8",
@@ -60,8 +66,9 @@ function resolveWebClientAsset(pathname) {
     return null;
   }
 
-  const filePath = path.resolve(WEB_CLIENT_ROOT, normalizedRelativePath);
-  if (!filePath.startsWith(WEB_CLIENT_ROOT + path.sep) && filePath !== WEB_CLIENT_ROOT) {
+  const vendorAssetPath = WEB_VENDOR_ASSETS.get(pathname);
+  const filePath = vendorAssetPath || path.resolve(WEB_CLIENT_ROOT, normalizedRelativePath);
+  if (!vendorAssetPath && !filePath.startsWith(WEB_CLIENT_ROOT + path.sep) && filePath !== WEB_CLIENT_ROOT) {
     return null;
   }
 

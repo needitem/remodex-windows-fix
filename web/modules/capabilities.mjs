@@ -16,8 +16,8 @@ export function collectBrowserCapabilities(windowLike, navigatorLike) {
     {
       label: "QR From Image",
       detail: "BarcodeDetector" in windowLike
-        ? "QR image decoding is available through BarcodeDetector."
-        : "BarcodeDetector is unavailable. Import the pairing JSON directly as a fallback.",
+        ? "QR decoding is available through BarcodeDetector, with jsQR as a fallback."
+        : "BarcodeDetector is unavailable. This app falls back to jsQR for image and camera decoding.",
     },
     {
       label: "PWA Shell",
