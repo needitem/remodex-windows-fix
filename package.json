@@ -20,6 +20,7 @@
     "start": "node ./bin/remodex.js up",
     "relay": "node ./bin/remodex-relay.js",
     "test": "node --test ./test/*.test.js",
+    "prepack": "npm run web:assets",
     "web:assets": "node ./src/generate-web-asset-map.js"
   },
   "keywords": [

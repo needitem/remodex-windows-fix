@@ -23,6 +23,33 @@ import {
   sandboxForAccess,
   shouldForkThreadForSend,
 } from "./modules/thread-send.mjs";
+import {
+  buildCommandPreview,
+  mergeMessagesWithCache,
+  normalizeCommandOutput,
+  summarizeCommandForDisplay,
+} from "./modules/thread-message-state.mjs";
+import {
+  applyExecCommandBegin,
+  applyExecCommandEnd,
+  applyExecCommandOutput,
+  buildCommandRawContent,
+} from "./modules/thread-command-state.mjs";
+import {
+  adoptRemoteThreadForChat as adoptRemoteThreadForChatModel,
+  hydrateChatFromThread as hydrateChatFromThreadModel,
+  mergeChatWithCache as mergeChatWithCacheModel,
+  normalizeThreadSource,
+  threadToChat as threadToChatModel,
+} from "./modules/thread-chat-state.mjs";
+import {
+  findChatByThreadId as findChatByThreadIdInCollections,
+  flattenChats as flattenChatsFromCollections,
+  groupRemoteThreads as groupRemoteThreadsModel,
+  mergeConversations as mergeConversationsModel,
+  representativeThreadInfo as representativeThreadInfoFromCollections,
+  upsertChatIntoConversations as upsertChatIntoCollections,
+} from "./modules/thread-conversation-state.mjs";
 
 const state = {
   accountSummary: "Account: Unknown",
@@ -1183,145 +1210,52 @@ async function switchGitBranch(chat, branch) {
 }
 
 function groupRemoteThreads(threads) {
-  const groups = new Map();
-  for (const thread of threads) {
-    const repo = repoLabelFromThread(thread);
-    if (!groups.has(repo)) {
-      groups.set(repo, []);
-    }
-    groups.get(repo).push(threadToChat(thread));
-  }
-  return Array.from(groups.entries()).map(([folder, chats]) => ({ folder, chats }));
+  return groupRemoteThreadsModel({
+    threads,
+    repoLabelFromThread,
+    threadToChat,
+  });
 }
 
 function mergeConversations(remoteConversations, existingChats) {
-  const merged = cloneConversations(remoteConversations);
-  const seenThreadIds = new Set(flattenChats(merged).map((chat) => chat.threadId || chat.id));
-  for (const existingChat of existingChats) {
-    const threadId = existingChat.threadId || existingChat.id;
-    if (!threadId || seenThreadIds.has(threadId)) {
-      continue;
-    }
-    upsertChatIntoConversations(merged, existingChat);
-    seenThreadIds.add(threadId);
-  }
-  return merged;
+  return mergeConversationsModel({
+    remoteConversations,
+    existingChats,
+    cloneConversations,
+    flattenChats,
+    upsertChatIntoConversations,
+  });
 }
 
 function threadToChat(thread) {
-  const nextChat = {
-    access: state.preferences.access,
-    branch: thread.gitInfo?.branch || "main",
-    cwd: thread.cwd,
-    id: thread.id,
-    model: null,
-    messages: extractMessagesFromThread(thread),
-    messagesLoaded: false,
-    originUrl: thread.gitInfo?.originUrl || null,
-    reasoning: null,
-    repo: repoLabelFromThread(thread),
-    snippet: thread.preview || "No preview",
-    source: normalizeThreadSource(thread.source),
-    threadId: thread.id,
-    timestamp: relativeTimeFromUnix(thread.updatedAt),
-    title: thread.name || thread.preview || "Untitled thread",
-    writable: false,
-  };
-  const mergedChat = mergeChatWithCache(nextChat);
-  mergedChat.messages = normalizeMessageOrigins(mergedChat.messages, messageOriginForChat(mergedChat));
-  return mergedChat;
+  return threadToChatModel(thread, {
+    defaultAccess: state.preferences.access,
+    mergeChatWithCache,
+    messageOriginForChat,
+    repoLabelFromThread,
+    relativeTimeFromUnix,
+  });
 }
 
 function hydrateChatFromThread(chat, thread) {
-  chat.branch = thread.gitInfo?.branch || chat.branch;
-  chat.cwd = thread.cwd;
-  chat.writable = state.threadCache[thread.id]?.writable === true;
-  chat.messages = normalizeMessageOrigins(
-    mergeMessagesWithCache(thread.id, extractMessagesFromThread(thread)),
-    messageOriginForChat(chat)
-  );
-  if (!threadHasInProgressTurn(thread)) {
-    chat.messages = chat.messages.filter((message) => !message.pending);
-  }
-  chat.messagesLoaded = true;
-  chat.originUrl = thread.gitInfo?.originUrl || chat.originUrl || null;
-  chat.repo = repoLabelFromThread(thread);
-  chat.source = normalizeThreadSource(thread.source);
-  chat.snippet = thread.preview || chat.snippet;
-  chat.timestamp = relativeTimeFromUnix(thread.updatedAt);
-  chat.title = thread.name || thread.preview || chat.title;
-  persistThreadCacheForChat(chat);
+  hydrateChatFromThreadModel(chat, thread, {
+    cachedMessages: state.threadCache[thread.id]?.messages || [],
+    cachedWritable: state.threadCache[thread.id]?.writable === true,
+    messageOriginForChat,
+    persistThreadCacheForChat,
+    repoLabelFromThread,
+    relativeTimeFromUnix,
+  });
 }
 
 function adoptRemoteThreadForChat(chat, thread) {
-  chat.threadId = thread.id;
-  chat.id = thread.id;
-  chat.cwd = thread.cwd;
-  chat.originUrl = thread.gitInfo?.originUrl || chat.originUrl || null;
-  chat.repo = repoLabelFromThread(thread);
-  chat.branch = thread.gitInfo?.branch || chat.branch;
-  chat.source = normalizeThreadSource(thread.source);
-  chat.title = thread.name || thread.preview || chat.title;
-  chat.timestamp = relativeTimeFromUnix(thread.updatedAt);
-  state.selectedChatId = chat.id;
-}
-
-function extractMessagesFromThread(thread) {
-  const messages = [];
-  for (const turn of thread.turns || []) {
-    for (const item of turn.items || []) {
-      if (item.type === "userMessage") {
-        const text = (item.content || []).filter((entry) => entry.type === "text").map((entry) => entry.text).join("\n\n");
-        if (text) {
-          messages.push({
-            id: item.id || `user:${turn.id || turn.turnId || messages.length}:${messages.length}`,
-            role: "user",
-            author: "You",
-            time: turn.status,
-            text,
-          });
-        }
-      } else if (item.type === "agentMessage") {
-        messages.push({
-          id: item.id || `assistant:${turn.id || turn.turnId || messages.length}:${messages.length}`,
-          role: "assistant",
-          author: "Codex",
-          time: item.phase || turn.status,
-          text: item.text,
-        });
-      } else if (item.type === "commandExecution") {
-        const command = typeof item.command === "string" ? item.command : "";
-        const rawOutput = normalizeCommandOutput(item.output || item.rawOutput || item.text || "");
-        messages.push({
-          id: item.id || `command:${turn.id || turn.turnId || messages.length}:${messages.length}`,
-          role: "assistant",
-          author: "Shell",
-          kind: "command",
-          time: item.status || turn.status,
-          command,
-          summary: summarizeCommandForDisplay(command || "Command"),
-          preview: buildCommandPreview(rawOutput),
-          rawOutput,
-          text: "",
-        });
-      } else if (item.type === "reasoning" && item.summary?.length) {
-        messages.push({
-          id: item.id || `reasoning:${turn.id || turn.turnId || messages.length}:${messages.length}`,
-          role: "assistant",
-          author: "Reasoning",
-          time: turn.status,
-          text: item.summary.join("\n"),
-        });
-      }
-    }
-  }
-  return messages.length ? messages : [{
-    id: `idle:${thread.id || "thread"}`,
-    role: "assistant",
-    author: "Codex",
-    time: "idle",
-    text: "This thread has no materialized turns yet.",
-  }];
+  adoptRemoteThreadForChatModel(chat, thread, {
+    repoLabelFromThread,
+    relativeTimeFromUnix,
+    selectChat(id) {
+      state.selectedChatId = id;
+    },
+  });
 }
 
 function buildThreadStartParams(chat) {
@@ -1361,13 +1295,7 @@ function guessCwdForRepo(repo) {
 }
 
 function findChatByThreadId(threadId) {
-  for (const group of state.conversations) {
-    const chat = group.chats.find((candidate) => candidate.threadId === threadId || candidate.id === threadId);
-    if (chat) {
-      return chat;
-    }
-  }
-  return null;
+  return findChatByThreadIdInCollections(state.conversations, threadId);
 }
 
 function ensureChatVisible(chat) {
@@ -1376,59 +1304,19 @@ function ensureChatVisible(chat) {
 }
 
 function upsertChatIntoConversations(conversations, chat) {
-  const existing = findChatInCollections(conversations, chat.threadId || chat.id);
-  if (existing) {
-    Object.assign(existing, mergeChatWithCache(chat));
-    return existing;
-  }
-
-  const folder = chat.repo || "Workspace";
-  let group = conversations.find((candidate) => candidate.folder === folder);
-  if (!group) {
-    group = { folder, chats: [] };
-    conversations.unshift(group);
-  }
-  group.chats.unshift(mergeChatWithCache(chat));
-  return group.chats[0];
-}
-
-function findChatInCollections(conversations, threadId) {
-  for (const group of conversations) {
-    const chat = group.chats.find((candidate) => candidate.threadId === threadId || candidate.id === threadId);
-    if (chat) {
-      return chat;
-    }
-  }
-  return null;
+  return upsertChatIntoCollections({
+    conversations,
+    chat,
+    mergeChatWithCache,
+  });
 }
 
 function flattenChats(conversations) {
-  return conversations.flatMap((group) => group.chats || []);
-}
-
-function normalizeThreadSource(source) {
-  if (typeof source === "string") {
-    return source;
-  }
-  if (source && typeof source === "object" && source.subAgent) {
-    return "subAgent";
-  }
-  return "unknown";
+  return flattenChatsFromCollections(conversations);
 }
 
 function representativeThreadInfo(repo) {
-  for (const group of state.conversations) {
-    for (const chat of group.chats) {
-      if (chat.repo === repo && (chat.cwd || chat.originUrl || chat.branch)) {
-        return {
-          branch: chat.branch,
-          cwd: chat.cwd || null,
-          originUrl: chat.originUrl || null,
-        };
-      }
-    }
-  }
-  return null;
+  return representativeThreadInfoFromCollections(state.conversations, repo);
 }
 
 async function createBranch() {
@@ -2000,31 +1888,20 @@ function legacyApplyExecCommandEndNotification(params) {
 
 function mergeChatWithCache(chat) {
   const cached = state.threadCache[chat.threadId || chat.id];
-  if (!cached) {
-    return chat;
+  const merged = mergeChatWithCacheModel(chat, cached);
+  if (cached?.messages?.length) {
+    merged.messages = mergeMessagesWithCache({
+      threadId: chat.threadId || chat.id,
+      serverMessages: chat.messages,
+      cachedMessages: cached.messages,
+    });
   }
-
-  return {
-    ...chat,
-    access: cached.access || chat.access,
-    branch: cached.branch || chat.branch,
-    cwd: cached.cwd || chat.cwd,
-    model: cached.model || chat.model || null,
-    messages: mergeMessagesWithCache(chat.threadId || chat.id, chat.messages),
-    originUrl: cached.originUrl || chat.originUrl || null,
-    reasoning: cached.reasoning || chat.reasoning || null,
-    repo: cached.repo || chat.repo,
-    snippet: cached.snippet || chat.snippet,
-    title: cached.title || chat.title,
-    writable: cached.writable === true,
-  };
+  return merged;
 }
 
 function applyExecCommandBeginNotification(params) {
   const threadId = params?.threadId;
-  const callId = params?.call_id || params?.callId;
-  const command = typeof params?.command === "string" ? params.command : "";
-  if (!threadId || !callId || !command) {
+  if (!threadId) {
     return;
   }
 
@@ -2033,21 +1910,8 @@ function applyExecCommandBeginNotification(params) {
     return;
   }
 
-  const messageId = `command:${callId}`;
-  if (!chat.messages.find((entry) => entry.id === messageId)) {
-    chat.messages.push({
-      id: messageId,
-      role: "assistant",
-      author: "Shell",
-      origin: messageOriginForChat(chat),
-      kind: "command",
-      command,
-      summary: summarizeCommandForDisplay(command),
-      preview: "Running...",
-      rawOutput: "",
-      time: "running",
-      text: "",
-    });
+  if (!applyExecCommandBegin(chat, params, { messageOrigin: messageOriginForChat(chat) })) {
+    return;
   }
 
   persistThreadCacheForChat(chat);
@@ -2058,9 +1922,7 @@ function applyExecCommandBeginNotification(params) {
 
 function applyExecCommandOutputNotification(params) {
   const threadId = params?.threadId;
-  const callId = params?.call_id || params?.callId;
-  const delta = typeof params?.chunk === "string" ? params.chunk : "";
-  if (!threadId || !callId || !delta) {
+  if (!threadId) {
     return;
   }
 
@@ -2069,27 +1931,10 @@ function applyExecCommandOutputNotification(params) {
     return;
   }
 
-  const messageId = `command:${callId}`;
-  let message = chat.messages.find((entry) => entry.id === messageId);
-  if (!message) {
-    message = {
-      id: messageId,
-      role: "assistant",
-      author: "Shell",
-      origin: messageOriginForChat(chat),
-      kind: "command",
-      command: typeof params?.command === "string" ? params.command : "",
-      summary: summarizeCommandForDisplay(typeof params?.command === "string" ? params.command : "Command"),
-      preview: "Running...",
-      rawOutput: "",
-      time: "running",
-      text: "",
-    };
-    chat.messages.push(message);
+  if (!applyExecCommandOutput(chat, params, { messageOrigin: messageOriginForChat(chat) })) {
+    return;
   }
 
-  message.rawOutput = `${message.rawOutput || ""}${message.rawOutput ? "\n" : ""}${delta}`;
-  message.preview = buildCommandPreview(message.rawOutput);
   persistThreadCacheForChat(chat);
   if (selectedChat()?.id === chat.id) {
     renderConversation();
@@ -2098,9 +1943,7 @@ function applyExecCommandOutputNotification(params) {
 
 function applyExecCommandEndNotification(params) {
   const threadId = params?.threadId;
-  const callId = params?.call_id || params?.callId;
-  const output = typeof params?.output === "string" ? params.output : "";
-  if (!threadId || !callId) {
+  if (!threadId) {
     return;
   }
 
@@ -2109,177 +1952,18 @@ function applyExecCommandEndNotification(params) {
     return;
   }
 
-  const messageId = `command:${callId}`;
-  let message = chat.messages.find((entry) => entry.id === messageId);
-  if (!message) {
-    message = {
-      id: messageId,
-      role: "assistant",
-      author: "Shell",
-      origin: messageOriginForChat(chat),
-      kind: "command",
-      command: typeof params?.command === "string" ? params.command : "",
-      summary: summarizeCommandForDisplay(typeof params?.command === "string" ? params.command : "Command"),
-      preview: "Completed",
-      rawOutput: "",
-      time: "completed",
-      text: "",
-    };
-    chat.messages.push(message);
+  if (!applyExecCommandEnd(chat, params, { messageOrigin: messageOriginForChat(chat) })) {
+    return;
   }
 
-  if (output) {
-    const normalizedOutput = normalizeCommandOutput(output);
-    if (normalizedOutput && !String(message.rawOutput || "").includes(normalizedOutput)) {
-      message.rawOutput = `${message.rawOutput || ""}${message.rawOutput ? "\n" : ""}${normalizedOutput}`;
-    }
-  }
-  message.preview = buildCommandPreview(message.rawOutput) || "Completed";
-  message.time = "completed";
   persistThreadCacheForChat(chat);
   if (selectedChat()?.id === chat.id) {
     renderConversation();
   }
 }
 
-function mergeMessagesWithCache(threadId, serverMessages) {
-  const cached = state.threadCache[threadId];
-  if (!cached?.messages?.length) {
-    return serverMessages;
-  }
-  if (!serverMessages.length) {
-    return cached.messages;
-  }
-
-  const merged = cached.messages.map((message) => ({ ...message }));
-  const indexesById = new Map();
-  const indexesBySemanticKey = new Map();
-
-  for (let index = 0; index < merged.length; index += 1) {
-    const message = merged[index];
-    if (message?.id) {
-      indexesById.set(`id:${message.id}`, index);
-    }
-    const semanticKey = messageSemanticKey(message);
-    if (semanticKey && !indexesBySemanticKey.has(semanticKey)) {
-      indexesBySemanticKey.set(semanticKey, index);
-    }
-  }
-
-  for (const serverMessage of serverMessages) {
-    const byIdKey = serverMessage?.id ? `id:${serverMessage.id}` : "";
-    const semanticKey = messageSemanticKey(serverMessage);
-    const matchedIndex = indexesById.get(byIdKey) ?? indexesBySemanticKey.get(semanticKey);
-    if (matchedIndex == null) {
-      merged.push(serverMessage);
-      const nextIndex = merged.length - 1;
-      if (serverMessage?.id) {
-        indexesById.set(`id:${serverMessage.id}`, nextIndex);
-      }
-      if (semanticKey && !indexesBySemanticKey.has(semanticKey)) {
-        indexesBySemanticKey.set(semanticKey, nextIndex);
-      }
-      continue;
-    }
-
-    merged[matchedIndex] = mergeCachedMessage(merged[matchedIndex], serverMessage);
-    if (serverMessage?.id) {
-      indexesById.set(`id:${serverMessage.id}`, matchedIndex);
-    }
-  }
-
-  return merged;
-}
-
-function threadHasInProgressTurn(thread) {
-  return Boolean((thread?.turns || []).some((turn) => turn?.status === "inProgress"));
-}
-
-function messageSemanticKey(message) {
-  if (!message || typeof message !== "object") {
-    return "";
-  }
-
-  if (message.kind === "command") {
-    return [
-      "command",
-      String(message.command || "").trim(),
-      normalizeCommandOutput(message.rawOutput || ""),
-    ].join("|");
-  }
-
-  const text = String(message.text || "").trim();
-  if (!text) {
-    return "";
-  }
-
-  return [
-    message.kind || "text",
-    message.role || "",
-    message.author || "",
-    text,
-  ].join("|");
-}
-
-function mergeCachedMessage(cachedMessage, serverMessage) {
-  const merged = {
-    ...cachedMessage,
-    ...serverMessage,
-    origin: cachedMessage.origin || serverMessage.origin,
-    text: String(serverMessage.text || "") || String(cachedMessage.text || ""),
-    time: preferredMessageTime(cachedMessage.time, serverMessage.time),
-  };
-
-  if (merged.kind === "command") {
-    merged.command = serverMessage.command || cachedMessage.command || "";
-    merged.rawOutput = serverMessage.rawOutput || cachedMessage.rawOutput || "";
-    merged.summary = serverMessage.summary || cachedMessage.summary || summarizeCommandForDisplay(merged.command || "Command");
-    merged.preview = serverMessage.preview || cachedMessage.preview || buildCommandPreview(merged.rawOutput);
-  }
-
-  return merged;
-}
-
-function preferredMessageTime(cachedTime, serverTime) {
-  if (!serverTime) {
-    return cachedTime;
-  }
-  if (!cachedTime) {
-    return serverTime;
-  }
-  return messageTimeRank(cachedTime) > messageTimeRank(serverTime) ? cachedTime : serverTime;
-}
-
-function messageTimeRank(value) {
-  switch (value) {
-    case "final_answer":
-      return 7;
-    case "commentary":
-      return 6;
-    case "completed":
-      return 5;
-    case "running":
-      return 4;
-    case "streaming":
-      return 3;
-    case "thinking":
-      return 2;
-    case "started":
-      return 1;
-    default:
-      return 0;
-  }
-}
-
 function chatHasPendingTurn(chat) {
   return Boolean(chat?.messages?.some((message) => message.pending));
-}
-
-function normalizeMessageOrigins(messages, origin) {
-  return (messages || []).map((message) => ({
-    ...message,
-    origin: message.origin || origin,
-  }));
 }
 
 function persistThreadCacheForChat(chat) {
@@ -2548,70 +2232,6 @@ function renderMessageBubble(element, message) {
   }
 
   element.textContent = message?.text || "";
-}
-
-function buildCommandRawContent(message) {
-  const parts = [];
-  if (message?.command) {
-    parts.push(message.command);
-  }
-
-  const normalizedOutput = normalizeCommandOutput(message?.rawOutput || message?.text || "");
-  if (normalizedOutput) {
-    parts.push(normalizedOutput);
-  }
-
-  return parts.join("\n\n").trim();
-}
-
-function summarizeCommandForDisplay(command) {
-  const normalized = String(command || "").replace(/\s+/g, " ").trim();
-  if (!normalized) {
-    return "Command";
-  }
-  if (normalized.startsWith("Get-ChildItem") && normalized.includes("Select-String")) {
-    return "Search files";
-  }
-  if (normalized.startsWith("Get-Content")) {
-    return "Read file";
-  }
-  if (normalized.startsWith("git ")) {
-    return "Run git";
-  }
-  if (normalized.startsWith("if (Test-Path")) {
-    return "Check file";
-  }
-  return truncate(normalized, 88);
-}
-
-function normalizeCommandOutput(value) {
-  const lines = String(value || "").replace(/\r\n/g, "\n").split("\n");
-  const filtered = [];
-  for (const line of lines) {
-    if (/^Exit code:/i.test(line)) {
-      continue;
-    }
-    if (/^Wall time:/i.test(line)) {
-      continue;
-    }
-    if (/^Total output lines:/i.test(line)) {
-      continue;
-    }
-    if (/^Output:$/i.test(line.trim())) {
-      continue;
-    }
-    filtered.push(line);
-  }
-  return filtered.join("\n").trim();
-}
-
-function buildCommandPreview(rawOutput) {
-  const normalized = normalizeCommandOutput(rawOutput);
-  if (!normalized) {
-    return "Running...";
-  }
-  const lines = normalized.split("\n").filter(Boolean);
-  return truncate(lines.slice(0, 4).join("\n"), 260);
 }
 
 function addLog(level, message, meta = new Date().toLocaleTimeString()) {
