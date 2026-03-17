@@ -711,6 +711,9 @@ function openScanner() {
   elements.scannerStatus.textContent = state.capabilities.secureContext
     ? "Use the rear camera or import a QR image."
     : "This page needs HTTPS or localhost for camera access.";
+  if (state.capabilities.secureContext) {
+    void startScanner();
+  }
 }
 
 function closeScanner() {
