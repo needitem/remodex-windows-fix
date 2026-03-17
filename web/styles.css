@@ -570,6 +570,25 @@ h2 {
   background: rgba(250, 250, 252, 0.82);
 }
 
+.runtime-strip {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  margin-bottom: 10px;
+}
+
+.runtime-chip {
+  display: inline-flex;
+  align-items: center;
+  min-height: 30px;
+  padding: 0 10px;
+  border-radius: 999px;
+  background: rgba(17, 24, 39, 0.05);
+  color: var(--muted-strong);
+  font-size: 0.78rem;
+  font-weight: 600;
+}
+
 .composer-toolbar {
   display: flex;
   align-items: center;
@@ -659,6 +678,17 @@ h2 {
   display: flex;
   gap: 10px;
   flex-wrap: wrap;
+}
+
+.branch-add-button {
+  align-self: end;
+  min-height: 40px;
+  padding: 0 12px;
+  border: 0;
+  border-radius: 14px;
+  background: rgba(17, 24, 39, 0.05);
+  color: var(--muted-strong);
+  font-weight: 600;
 }
 
 .composer-submit {
@@ -1251,6 +1281,11 @@ body.sidebar-open {
   .context-chip {
     flex: 1 1 42%;
     min-width: 0;
+  }
+
+  .branch-add-button {
+    flex: 1 1 42%;
+    width: 100%;
   }
 
   .toolbar-select select,

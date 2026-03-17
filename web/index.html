@@ -86,6 +86,11 @@
       <section id="message-list" class="message-list" aria-live="polite"></section>
 
       <section class="composer-shell">
+        <div class="runtime-strip">
+          <span id="repo-location-chip" class="runtime-chip">Repo: Unknown</span>
+          <span id="rate-limit-chip" class="runtime-chip">Usage: Unknown</span>
+          <span id="account-chip" class="runtime-chip">Account: Unknown</span>
+        </div>
         <div class="composer-toolbar">
           <button class="composer-plus" id="import-file-button" type="button" aria-label="Import QR image or pairing JSON">+</button>
           <div class="toolbar-selects">
@@ -118,6 +123,7 @@
               <span>Branch</span>
               <select id="branch-select"></select>
             </label>
+            <button id="create-branch-button" class="branch-add-button" type="button">+ Branch</button>
             <label class="context-chip">
               <span>Access</span>
               <select id="access-select"></select>

@@ -95,9 +95,33 @@ export function createBrowserBridgeClient({
       await readyPromise;
       return request("thread/read", { includeTurns: true, threadId });
     },
+    async readAccount() {
+      await readyPromise;
+      return request("account/read", {});
+    },
+    async readRateLimits() {
+      await readyPromise;
+      return request("account/rateLimits/read", {});
+    },
     async listModels(params = {}) {
       await readyPromise;
       return request("model/list", params);
+    },
+    async gitBranchesWithStatus(cwd) {
+      await readyPromise;
+      return request("git/branchesWithStatus", { cwd });
+    },
+    async gitCheckout(cwd, branch) {
+      await readyPromise;
+      return request("git/checkout", { branch, cwd });
+    },
+    async gitCreateBranch(cwd, name) {
+      await readyPromise;
+      return request("git/createBranch", { cwd, name });
+    },
+    async gitRemoteUrl(cwd) {
+      await readyPromise;
+      return request("git/remoteUrl", { cwd });
     },
     async startThread(params = {}) {
       await readyPromise;

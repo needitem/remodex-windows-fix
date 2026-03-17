@@ -7,7 +7,11 @@ import { ACCESS_OPTIONS, MODEL_OPTIONS, REASONING_OPTIONS, REPOSITORY_BRANCHES, 
 import { loadPreferences, savePreferences } from "./modules/preferences.mjs";
 import { createScannerController } from "./modules/scanner-controller.mjs";
 
+const LAST_THREAD_STORAGE_KEY = "remodex-web.last-thread-id";
+
 const state = {
+  accountSummary: "Account: Unknown",
+  branchCatalog: [],
   capabilities: collectBrowserCapabilities(window, navigator),
   client: null,
   connection: { detail: "Load a QR or pairing JSON to connect the browser client.", label: "Waiting for pairing", status: "warning" },
@@ -24,9 +28,10 @@ const state = {
   })),
   pairingPayload: loadStoredPairingPayload(),
   preferences: loadPreferences({ accessOptions: ACCESS_OPTIONS, modelOptions: MODEL_OPTIONS, reasoningOptions: REASONING_OPTIONS, speedOptions: SPEED_OPTIONS }),
+  rateLimitSummary: "Usage: Unknown",
   relayOverride: loadStoredRelayOverride(),
   searchQuery: "",
-  selectedChatId: null,
+  selectedChatId: loadStoredLastThreadId(),
   sidebarOpen: false,
   mobileThreadOpen: false,
 };
@@ -41,6 +46,9 @@ function init() {
   seedLogs();
   wireEvents();
   renderAll();
+  if (state.pairingPayload) {
+    void connectRelay({ restoreThread: true });
+  }
 }
 
 function mapElements() {
@@ -58,6 +66,7 @@ function mapElements() {
     connectionDot: document.querySelector("#connection-dot"),
     connectionLabel: document.querySelector("#connection-label"),
     connectionMeta: document.querySelector("#connection-meta"),
+    createBranchButton: document.querySelector("#create-branch-button"),
     disconnectButton: document.querySelector("#disconnect-button"),
     folderList: document.querySelector("#folder-list"),
     fontSelect: document.querySelector("#font-select"),
@@ -75,9 +84,12 @@ function mapElements() {
     openSettingsButton: document.querySelector("#open-settings-button"),
     pairingFileInput: document.querySelector("#pairing-file-input"),
     pairingJsonInput: document.querySelector("#pairing-json-input"),
+    accountChip: document.querySelector("#account-chip"),
     pushStatusLabel: document.querySelector("#push-status-label"),
+    rateLimitChip: document.querySelector("#rate-limit-chip"),
     reasoningSelect: document.querySelector("#reasoning-select"),
     relayUrlInput: document.querySelector("#relay-url-input"),
+    repoLocationChip: document.querySelector("#repo-location-chip"),
     repoSelect: document.querySelector("#repo-select"),
     scannerImportButton: document.querySelector("#scanner-import-button"),
     scannerModal: document.querySelector("#scanner-modal"),
@@ -105,6 +117,7 @@ function mapElements() {
 function wireEvents() {
   elements.searchInput.addEventListener("input", (event) => { state.searchQuery = event.target.value.trim().toLowerCase(); renderSidebar(); });
   elements.newChatButton.addEventListener("click", () => createLocalChat());
+  elements.createBranchButton.addEventListener("click", createBranch);
   elements.sendButton.addEventListener("click", sendMessage);
   elements.composerInput.addEventListener("keydown", (event) => { if ((event.metaKey || event.ctrlKey) && event.key === "Enter") { event.preventDefault(); void sendMessage(); } });
   elements.repoSelect.addEventListener("change", (event) => mutateSelectedChat(async (chat) => {
@@ -115,9 +128,11 @@ function wireEvents() {
     chat.cwd = repoInfo?.cwd || chat.cwd || null;
     chat.originUrl = repoInfo?.originUrl || chat.originUrl || null;
     await syncThreadMetadata(chat);
+    await refreshBranchCatalog(chat);
   }));
   elements.branchSelect.addEventListener("change", (event) => mutateSelectedChat(async (chat) => {
     chat.branch = event.target.value;
+    await switchGitBranch(chat, event.target.value);
     await syncThreadMetadata(chat);
   }));
   elements.accessSelect.addEventListener("change", (event) => mutateSelectedChat((chat) => { chat.access = event.target.value; state.preferences.access = event.target.value; persistPreferences(); }));
@@ -161,6 +176,7 @@ function renderAll() {
   renderConversation();
   renderPairing();
   renderConnection();
+  renderRuntimeStrip();
   renderSettings();
   renderLogs();
 }
@@ -255,9 +271,11 @@ function renderConversation() {
   elements.threadRepoLabel.textContent = chat.repo;
   elements.threadTitle.textContent = chat.title;
   elements.threadSubtitle.textContent = `Branch ${chat.branch} | ${chat.access} | ${state.connection.label}`;
-  setOptions(elements.branchSelect, REPOSITORY_BRANCHES[chat.repo] || [chat.branch || "main"], chat.branch);
+  const branchOptions = state.branchCatalog.length ? state.branchCatalog : (REPOSITORY_BRANCHES[chat.repo] || [chat.branch || "main"]);
+  setOptions(elements.branchSelect, branchOptions, chat.branch);
   elements.repoSelect.value = chat.repo;
   elements.accessSelect.value = chat.access;
+  persistLastThreadId(chat.id);
 
   const fragment = document.createDocumentFragment();
   for (const message of chat.messages) {
@@ -296,6 +314,14 @@ function renderConnection() {
   elements.connectionDot.className = "connection-dot";
   elements.connectionDot.classList.add(`state-${state.connection.status}`);
   elements.composerStatus.textContent = state.connection.label;
+}
+
+function renderRuntimeStrip() {
+  const chat = selectedChat();
+  const repoLocation = chat?.cwd ? "Repo: Local" : "Repo: Cloud";
+  elements.repoLocationChip.textContent = repoLocation;
+  elements.rateLimitChip.textContent = state.rateLimitSummary;
+  elements.accountChip.textContent = state.accountSummary;
 }
 
 function renderSettings() {
@@ -537,7 +563,7 @@ async function startScanner() {
   }
 }
 
-async function connectRelay() {
+async function connectRelay({ restoreThread = false } = {}) {
   if (!state.pairingPayload) {
     openScanner();
     addLog("warn", "Open the scanner or load pairing JSON before connecting.", "relay");
@@ -572,7 +598,8 @@ async function connectRelay() {
     renderLogs();
     await state.client.connect();
     await refreshModelCatalog();
-    await refreshThreadList();
+    await refreshRuntimeSummaries();
+    await refreshThreadList(restoreThread ? loadStoredLastThreadId() : state.selectedChatId);
   } catch (error) {
     state.connection = { detail: error.message || "Failed to initialize the browser client.", label: "Connect failed", status: "error" };
     addLog("error", error.message || "Failed to initialize the browser client.", "connect");
@@ -681,10 +708,14 @@ async function refreshThreadList(preferredThreadId = state.selectedChatId) {
   } else if (state.conversations[0]?.chats[0]) {
     state.selectedChatId = state.conversations[0].chats[0].id;
   }
+  if (state.selectedChatId) {
+    persistLastThreadId(state.selectedChatId);
+  }
   renderAll();
   const chat = selectedChat();
   if (chat?.threadId) {
     await readRemoteThread(chat.threadId);
+    await refreshBranchCatalog(chat);
   }
 }
 
@@ -721,6 +752,7 @@ async function readRemoteThread(threadId) {
   }
   hydrateChatFromThread(chat, result.thread);
   renderAll();
+  await refreshBranchCatalog(chat);
 }
 
 async function pollThreadUntilSettled(threadId, attemptsRemaining = 10) {
@@ -768,6 +800,61 @@ function scheduleRefresh(threadId) {
     }
     void refreshThreadList();
   }, 400);
+}
+
+async function refreshRuntimeSummaries() {
+  if (!state.client) {
+    return;
+  }
+
+  try {
+    const [accountResult, rateLimitResult] = await Promise.all([
+      state.client.readAccount(),
+      state.client.readRateLimits(),
+    ]);
+    state.accountSummary = summarizeAccount(accountResult);
+    state.rateLimitSummary = summarizeRateLimits(rateLimitResult);
+    renderRuntimeStrip();
+  } catch (error) {
+    addLog("warn", "Could not load account or rate limit metadata.", error.message || "account");
+    renderLogs();
+  }
+}
+
+async function refreshBranchCatalog(chat) {
+  if (!state.client || !chat?.cwd) {
+    state.branchCatalog = [];
+    renderSelects();
+    return;
+  }
+
+  try {
+    const branchResult = await state.client.gitBranchesWithStatus(chat.cwd);
+    state.branchCatalog = branchResult.branches || [];
+    if (!chat.branch && branchResult.current) {
+      chat.branch = branchResult.current;
+    }
+    renderSelects();
+  } catch (error) {
+    addLog("warn", "Could not load git branches for the current repo.", error.message || "git/branchesWithStatus");
+    renderLogs();
+  }
+}
+
+async function switchGitBranch(chat, branch) {
+  if (!state.client || !chat?.cwd || !branch) {
+    return;
+  }
+
+  try {
+    const result = await state.client.gitCheckout(chat.cwd, branch);
+    chat.branch = result.current || branch;
+    addLog("info", "Checked out git branch.", chat.branch);
+    renderLogs();
+  } catch (error) {
+    addLog("error", error.message || "Failed to switch git branch.", "git/checkout");
+    renderLogs();
+  }
 }
 
 function groupRemoteThreads(threads) {
@@ -887,6 +974,80 @@ function representativeThreadInfo(repo) {
     }
   }
   return null;
+}
+
+async function createBranch() {
+  const chat = selectedChat();
+  if (!state.client || !chat?.cwd) {
+    addLog("warn", "Branch creation needs a connected local git repo.", "branch");
+    renderLogs();
+    return;
+  }
+
+  const name = window.prompt("New branch name");
+  if (!name || !name.trim()) {
+    return;
+  }
+
+  try {
+    const result = await state.client.gitCreateBranch(chat.cwd, name.trim());
+    chat.branch = result.branch || name.trim();
+    await refreshBranchCatalog(chat);
+    addLog("info", "Created git branch.", chat.branch);
+    renderAll();
+  } catch (error) {
+    addLog("error", error.message || "Failed to create git branch.", "git/createBranch");
+    renderLogs();
+  }
+}
+
+function summarizeAccount(accountResult) {
+  if (accountResult?.account?.type === "chatgpt") {
+    return `Account: ${accountResult.account.planType || "chatgpt"}`;
+  }
+  if (accountResult?.account?.type === "apiKey") {
+    return "Account: API key";
+  }
+  if (accountResult?.requiresOpenaiAuth) {
+    return "Account: Sign in required";
+  }
+  return "Account: Unknown";
+}
+
+function summarizeRateLimits(rateLimitResult) {
+  const snapshot = rateLimitResult?.rateLimitsByLimitId?.codex || rateLimitResult?.rateLimits || null;
+  if (!snapshot) {
+    return "Usage: Unknown";
+  }
+
+  if (snapshot.credits?.unlimited) {
+    return "Usage: Unlimited";
+  }
+  if (snapshot.credits?.balance) {
+    return `Usage: ${snapshot.credits.balance}`;
+  }
+  if (snapshot.primary?.usedPercent != null) {
+    return `Usage: ${snapshot.primary.usedPercent}% used`;
+  }
+  return "Usage: Available";
+}
+
+function persistLastThreadId(threadId) {
+  try {
+    if (!threadId) {
+      localStorage.removeItem(LAST_THREAD_STORAGE_KEY);
+      return;
+    }
+    localStorage.setItem(LAST_THREAD_STORAGE_KEY, threadId);
+  } catch {}
+}
+
+function loadStoredLastThreadId() {
+  try {
+    return localStorage.getItem(LAST_THREAD_STORAGE_KEY) || null;
+  } catch {
+    return null;
+  }
 }
 
 function repoLabelFromThread(thread) {
