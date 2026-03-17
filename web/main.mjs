@@ -1229,6 +1229,9 @@ function hydrateChatFromThread(chat, thread) {
     mergeMessagesWithCache(thread.id, extractMessagesFromThread(thread)),
     messageOriginForChat(chat)
   );
+  if (!threadHasInProgressTurn(thread)) {
+    chat.messages = chat.messages.filter((message) => !message.pending);
+  }
   chat.messagesLoaded = true;
   chat.originUrl = thread.gitInfo?.originUrl || chat.originUrl || null;
   chat.repo = repoLabelFromThread(thread);
@@ -2203,6 +2206,10 @@ function mergeMessagesWithCache(threadId, serverMessages) {
   }
 
   return merged;
+}
+
+function threadHasInProgressTurn(thread) {
+  return Boolean((thread?.turns || []).some((turn) => turn?.status === "inProgress"));
 }
 
 function messageSemanticKey(message) {

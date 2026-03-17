@@ -250,7 +250,7 @@ function focusOrLaunchWindowsCodexApp() {
     "$pkg = Get-AppxPackage OpenAI.Codex -ErrorAction SilentlyContinue | Select-Object -First 1",
     "if (-not $pkg) { throw 'Codex app is not installed.' }",
     "Start-Process explorer.exe \"shell:AppsFolder\\$($pkg.PackageFamilyName)!App\"",
-  ].join("; ");
+  ].join("\n");
 
   return execFilePromise("powershell.exe", ["-NoProfile", "-Command", script]);
 }
