@@ -49,9 +49,12 @@ const elements = mapElements();
 const scanner = createScannerController({ videoElement: elements.scannerVideo });
 let refreshTimer = 0;
 
-init();
+void init();
 
-function init() {
+async function init() {
+  if (await cleanupLegacyAppShell()) {
+    return;
+  }
   seedLogs();
   wireEvents();
   renderAll();
@@ -1329,4 +1332,46 @@ function setScannerStatus(message) {
 
 function cloneConversations(value) {
   return JSON.parse(JSON.stringify(value));
+}
+
+async function cleanupLegacyAppShell() {
+  if (!("serviceWorker" in navigator)) {
+    return false;
+  }
+
+  const reloadMarker = "remodex-web.sw-cleanup-reloaded";
+  let hadLegacyRegistration = false;
+
+  try {
+    const registrations = await navigator.serviceWorker.getRegistrations();
+    const appRegistrations = registrations.filter((registration) => (
+      registration.scope.includes("/app/")
+      || registration.scope.endsWith("/app")
+    ));
+
+    hadLegacyRegistration = appRegistrations.length > 0;
+    await Promise.all(appRegistrations.map((registration) => registration.unregister()));
+  } catch {}
+
+  try {
+    if ("caches" in globalThis) {
+      const keys = await caches.keys();
+      await Promise.all(
+        keys
+          .filter((key) => key.startsWith("remodex-web-deck-"))
+          .map((key) => caches.delete(key))
+      );
+    }
+  } catch {}
+
+  try {
+    if (hadLegacyRegistration && sessionStorage.getItem(reloadMarker) !== "1") {
+      sessionStorage.setItem(reloadMarker, "1");
+      window.location.replace(window.location.href);
+      return true;
+    }
+    sessionStorage.removeItem(reloadMarker);
+  } catch {}
+
+  return false;
 }
