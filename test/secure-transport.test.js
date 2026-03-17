@@ -6,6 +6,9 @@
 
 const test = require("node:test");
 const assert = require("node:assert/strict");
+const fs = require("node:fs");
+const os = require("node:os");
+const path = require("node:path");
 const {
   createCipheriv,
   createDecipheriv,
@@ -61,7 +64,7 @@ test("secure transport rejects plaintext JSON-RPC before the secure handshake", 
   assert.equal(controlMessages[0]?.code, "update_required");
 });
 
-test("secure transport round-trips encrypted payloads after a trusted reconnect handshake", () => {
+test("secure transport round-trips encrypted payloads after a trusted reconnect handshake", () => withTemporaryDeviceStateEnv(() => {
   const macIdentity = createOkpKeyPair("ed25519");
   const phoneIdentity = createOkpKeyPair("ed25519");
   const phoneEphemeral = createOkpKeyPair("x25519");
@@ -247,9 +250,9 @@ test("secure transport round-trips encrypted payloads after a trusted reconnect 
   assert.deepEqual(applicationMessages, [
     JSON.stringify({ id: "request-1", method: "thread/list", params: {} }),
   ]);
-});
+}));
 
-test("qr bootstrap allows pairing a second trusted client with a distinct device id", () => {
+test("qr bootstrap allows pairing a second trusted client with a distinct device id", () => withTemporaryDeviceStateEnv(() => {
   const macIdentity = createOkpKeyPair("ed25519");
   const firstPhoneIdentity = createOkpKeyPair("ed25519");
   const firstPhoneEphemeral = createOkpKeyPair("x25519");
@@ -302,9 +305,9 @@ test("qr bootstrap allows pairing a second trusted client with a distinct device
 
   const serverHello = controlMessages.find((message) => message.kind === "serverHello");
   assert.ok(serverHello, "expected the second client bootstrap to proceed");
-});
+}));
 
-test("qr bootstrap starts a fresh replay window instead of leaking buffered messages", () => {
+test("qr bootstrap starts a fresh replay window instead of leaking buffered messages", () => withTemporaryDeviceStateEnv(() => {
   const macIdentity = createOkpKeyPair("ed25519");
   const phoneIdentity = createOkpKeyPair("ed25519");
   const firstEphemeral = createOkpKeyPair("x25519");
@@ -357,7 +360,7 @@ test("qr bootstrap starts a fresh replay window instead of leaking buffered mess
   });
 
   assert.equal(wireMessages.length, 1);
-});
+}));
 
 function finishHandshake({
   secureTransport,
@@ -480,6 +483,36 @@ function createOkpKeyPair(type) {
     privateKey: base64UrlToBase64(privateJwk.d),
     publicKey: base64UrlToBase64(publicJwk.x),
   };
+}
+
+function withTemporaryDeviceStateEnv(run) {
+  const tempDir = fs.mkdtempSync(path.join(os.tmpdir(), "remodex-secure-transport-"));
+  const previousEnv = {
+    REMODEX_DEVICE_STATE_DIR: process.env.REMODEX_DEVICE_STATE_DIR,
+    REMODEX_DEVICE_STATE_FILE: process.env.REMODEX_DEVICE_STATE_FILE,
+    REMODEX_DEVICE_STATE_KEYCHAIN_MOCK_FILE: process.env.REMODEX_DEVICE_STATE_KEYCHAIN_MOCK_FILE,
+  };
+
+  process.env.REMODEX_DEVICE_STATE_DIR = tempDir;
+  process.env.REMODEX_DEVICE_STATE_FILE = path.join(tempDir, "device-state.json");
+  process.env.REMODEX_DEVICE_STATE_KEYCHAIN_MOCK_FILE = path.join(tempDir, "keychain.json");
+
+  try {
+    return run();
+  } finally {
+    restoreEnv(previousEnv);
+    fs.rmSync(tempDir, { recursive: true, force: true });
+  }
+}
+
+function restoreEnv(previousEnv) {
+  for (const [key, value] of Object.entries(previousEnv)) {
+    if (value == null) {
+      delete process.env[key];
+    } else {
+      process.env[key] = value;
+    }
+  }
 }
 
 function buildTranscriptBytes({

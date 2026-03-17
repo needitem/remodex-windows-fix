@@ -19,6 +19,7 @@ const {
   rewriteWorkspacePathsForDisplay,
 } = require("./workspace-paths");
 const { printQR } = require("./qr");
+const { traceBridgePayload } = require("./bridge-trace");
 const { rememberActiveThread } = require("./session-state");
 const { handleDesktopRequest } = require("./desktop-handler");
 const { handleGitRequest } = require("./git-handler");
@@ -260,6 +261,7 @@ function startBridge() {
 
   // Routes decrypted app payloads through the same bridge handlers as before.
   function handleApplicationMessage(rawMessage) {
+    traceBridgePayload("incoming", rawMessage);
     if (handleBridgeManagedHandshakeMessage(rawMessage)) {
       return;
     }
@@ -291,6 +293,7 @@ function startBridge() {
 
   // Encrypts bridge-generated responses instead of letting the relay see plaintext.
   function sendApplicationResponse(rawMessage) {
+    traceBridgePayload("outgoing", rawMessage);
     registerWorkspacePathsFromMessage(rawMessage);
     const forwardedMessage = rewriteWorkspacePathsForDisplay(rawMessage);
     secureTransport.queueOutboundApplicationMessage(forwardedMessage, (wireMessage) => {

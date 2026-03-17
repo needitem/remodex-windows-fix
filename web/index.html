@@ -10,8 +10,10 @@
   <link rel="stylesheet" href="./styles.css?v=20260317l">
 </head>
 <body>
-  <div class="app-frame">
-    <aside class="sidebar" data-sidebar>
+  <a class="skip-link" href="#main-content">Skip to main content</a>
+  <div class="app-stage">
+    <div class="app-frame">
+      <aside class="sidebar" data-sidebar>
       <div class="sidebar-top">
         <div class="brand-row">
           <div class="brand-mark">R</div>
@@ -27,11 +29,37 @@
           </svg>
           <input id="search-input" type="search" placeholder="Search conversations">
         </label>
+        <p id="search-meta" class="search-meta">0 threads across 0 workspaces</p>
 
         <div class="sidebar-actions">
           <button id="new-chat-button" class="pill-button" type="button">New Chat</button>
           <button id="open-scanner-button" class="pill-button pill-button-accent" type="button">Scan QR</button>
         </div>
+
+        <section class="deck-summary" aria-label="Workspace overview">
+          <div class="deck-summary-head">
+            <div>
+              <p class="eyebrow">Bridge Deck</p>
+              <h3 id="deck-summary-title">Pair the browser shell</h3>
+            </div>
+            <span id="deck-summary-status" class="deck-summary-status deck-summary-status-warning" aria-hidden="true"></span>
+          </div>
+          <p id="deck-summary-copy" class="deck-summary-copy">Load pairing JSON or scan a QR code to pull live Remodex threads into this browser workspace.</p>
+          <div class="deck-stats">
+            <article class="deck-stat">
+              <strong id="workspace-count">0</strong>
+              <span>Workspaces</span>
+            </article>
+            <article class="deck-stat">
+              <strong id="thread-count">0</strong>
+              <span>Threads</span>
+            </article>
+            <article class="deck-stat">
+              <strong id="active-turn-count">0</strong>
+              <span>Running</span>
+            </article>
+          </div>
+        </section>
       </div>
 
       <div class="sidebar-scroll">
@@ -61,9 +89,9 @@
           Settings
         </button>
       </div>
-    </aside>
+      </aside>
 
-    <main class="conversation-shell">
+      <main class="conversation-shell" id="main-content" tabindex="-1">
       <header class="conversation-header">
         <div class="conversation-header-left">
           <button class="nav-button desktop-hidden" id="mobile-back-button" type="button" aria-label="Back to chats">
@@ -78,10 +106,41 @@
         </div>
 
         <div class="conversation-header-actions">
+          <span class="header-chip thread-mode-chip thread-mode-chip-neutral" id="thread-mode-chip">No Thread</span>
           <button class="header-chip" id="header-scan-button" type="button">Scan QR</button>
           <button class="header-chip" id="header-settings-button" type="button">Settings</button>
         </div>
       </header>
+
+      <section class="thread-spotlight" id="thread-spotlight" aria-label="Thread overview">
+        <div class="thread-spotlight-main">
+          <p id="thread-spotlight-kicker" class="eyebrow eyebrow-muted">No active thread</p>
+          <h3 id="thread-spotlight-title">Choose a chat or start a local draft</h3>
+          <p id="thread-spotlight-copy" class="thread-spotlight-copy">Pair the browser client, then open a thread to see repo context, runtime mode, and live bridge status here.</p>
+          <div class="thread-spotlight-tags">
+            <span id="thread-mode-pill" class="spotlight-pill">No Thread</span>
+            <span id="thread-runtime-pill" class="spotlight-pill spotlight-pill-muted">Cloud runtime</span>
+          </div>
+        </div>
+        <div class="thread-spotlight-grid">
+          <article class="thread-spotlight-card">
+            <span>Messages</span>
+            <strong id="thread-message-count">0</strong>
+          </article>
+          <article class="thread-spotlight-card">
+            <span>Branch</span>
+            <strong id="thread-branch-value">Unknown</strong>
+          </article>
+          <article class="thread-spotlight-card">
+            <span>Access</span>
+            <strong id="thread-access-value">Unknown</strong>
+          </article>
+          <article class="thread-spotlight-card">
+            <span>Synced</span>
+            <strong id="thread-sync-value">Waiting</strong>
+          </article>
+        </div>
+      </section>
 
       <section id="message-list" class="message-list" aria-live="polite"></section>
 
@@ -135,8 +194,14 @@
             <button id="send-button" class="send-button" type="button">Send</button>
           </div>
         </div>
+        <div class="composer-hints" aria-label="Composer tips">
+          <span class="composer-hint">Ctrl/Cmd + Enter sends the current prompt.</span>
+          <span class="composer-hint">Use @files, $skills, and /commands directly in the prompt.</span>
+          <span class="composer-hint">Import a QR image or pairing JSON from the + button.</span>
+        </div>
       </section>
-    </main>
+      </main>
+    </div>
   </div>
 
   <aside class="settings-sheet" id="settings-sheet" aria-hidden="true">

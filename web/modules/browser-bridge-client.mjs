@@ -2,6 +2,11 @@ import { buildBrowserRelaySocketUrl } from "./browser-relay-client.mjs";
 import { createBrowserSecureTransport } from "./browser-secure-transport.mjs";
 
 const REQUEST_TIMEOUT_MS = 30_000;
+const CONNECT_RETRY_DELAY_MS = 900;
+const INITIAL_CONNECT_RETRY_WINDOW_MS = 12_000;
+const UNEXPECTED_CLOSE_RETRY_DELAY_MS = 1_500;
+const CLOSE_CODE_INVALID_SESSION = 4000;
+const CLOSE_CODE_IPHONE_REPLACED = 4003;
 
 export function createBrowserBridgeClient({
   pairingPayload,
@@ -13,9 +18,11 @@ export function createBrowserBridgeClient({
 } = {}) {
   const secureTransport = createBrowserSecureTransport({ pairingPayload });
   const pendingRequests = new Map();
+  let hasEstablishedSession = false;
   let initialized = false;
   let isManualDisconnect = false;
   let nextRequestId = 1;
+  let reconnectTimer = null;
   let socket = null;
 
   let resolveReady = () => {};
@@ -28,49 +35,10 @@ export function createBrowserBridgeClient({
   return {
     async connect() {
       isManualDisconnect = false;
-      socket = new WebSocket(buildBrowserRelaySocketUrl(relayBaseUrl || pairingPayload?.relay, pairingPayload?.sessionId));
-      secureTransport.bindLiveSendWireMessage((wireMessage) => {
-        if (socket?.readyState === WebSocket.OPEN) {
-          socket.send(wireMessage);
-        }
+      clearReconnectTimer();
+      openSocket({
+        connectStartedAt: Date.now(),
       });
-
-      socket.addEventListener("close", (event) => {
-        if (isManualDisconnect) {
-          isManualDisconnect = false;
-          onConnectionState({ detail: "Pairing remains stored locally.", label: "Disconnected", status: "warning" });
-          return;
-        }
-        rejectAllPending(event.reason || "Socket closed by the relay.");
-        rejectSecure(new Error(event.reason || "Socket closed by the relay."));
-        rejectReady(new Error(event.reason || "Socket closed by the relay."));
-        onConnectionState({ detail: event.reason || "Socket closed by the relay.", label: "Disconnected", status: "warning" });
-      });
-      socket.addEventListener("error", () => {
-        rejectAllPending("Relay socket error.");
-        rejectSecure(new Error("Relay socket error."));
-        rejectReady(new Error("Relay socket error."));
-        onConnectionState({ detail: "The relay socket failed before the secure handshake completed.", label: "Socket error", status: "error" });
-      });
-      socket.addEventListener("message", (event) => {
-        void handleWireMessage(String(event.data || "")).catch((error) => {
-          rejectSecure(error);
-          rejectReady(error);
-          onLog("error", error.message || "Failed to process a secure relay message.", "wire");
-          onConnectionState({ detail: error.message || "Failed to process a secure relay message.", label: "Secure error", status: "error" });
-        });
-      });
-      socket.addEventListener("open", () => {
-        onConnectionState({ detail: "Relay socket open. Starting secure pairing handshake.", label: "Pairing", status: "warning" });
-        void secureTransport.startHandshake().then((summary) => {
-          onLog("info", "Sent clientHello from the browser.", summary.phoneDeviceId);
-        }).catch((error) => {
-          rejectSecure(error);
-          rejectReady(error);
-          onLog("error", error.message || "Could not start secure pairing.", "clientHello");
-        });
-      });
-
       return readyPromise;
     },
     async waitUntilReady() {
@@ -78,6 +46,8 @@ export function createBrowserBridgeClient({
     },
     async disconnect() {
       isManualDisconnect = true;
+      hasEstablishedSession = false;
+      clearReconnectTimer();
       rejectAllPending("Disconnected by user.");
       socket?.close(1000, "Disconnected by user");
       socket = null;
@@ -94,6 +64,14 @@ export function createBrowserBridgeClient({
     async readThread(threadId) {
       await readyPromise;
       return request("thread/read", { includeTurns: true, threadId });
+    },
+    async readThreadRuntime(threadId) {
+      await readyPromise;
+      return request("thread/runtime/read", { threadId });
+    },
+    async readActiveThread() {
+      await readyPromise;
+      return request("thread/active/read", {});
     },
     async readAccount() {
       await readyPromise;
@@ -127,6 +105,10 @@ export function createBrowserBridgeClient({
       await readyPromise;
       return request("thread/start", params);
     },
+    async forkThread(params = {}) {
+      await readyPromise;
+      return request("thread/fork", params);
+    },
     async startTurn(params = {}) {
       await readyPromise;
       return request("turn/start", params);
@@ -140,6 +122,105 @@ export function createBrowserBridgeClient({
     },
   };
 
+  function openSocket({ connectStartedAt }) {
+    secureTransport.disconnect();
+    securePromise = resetSecurePromise();
+    socket = new WebSocket(buildBrowserRelaySocketUrl(relayBaseUrl || pairingPayload?.relay, pairingPayload?.sessionId));
+    const activeSocket = socket;
+
+    secureTransport.bindLiveSendWireMessage((wireMessage) => {
+      if (activeSocket?.readyState === WebSocket.OPEN) {
+        activeSocket.send(wireMessage);
+      }
+    });
+
+    activeSocket.addEventListener("close", (event) => {
+      if (socket === activeSocket) {
+        socket = null;
+      }
+      if (isManualDisconnect) {
+        isManualDisconnect = false;
+        onConnectionState({ detail: "Pairing remains stored locally.", label: "Disconnected", status: "warning" });
+        return;
+      }
+
+      const closeReason = event.reason || "Socket closed by the relay.";
+      const closeCode = Number(event.code) || 0;
+      const shouldRetryInitialConnect = !initialized
+        && !hasEstablishedSession
+        && closeReason === "Mac session not available"
+        && (Date.now() - connectStartedAt) < INITIAL_CONNECT_RETRY_WINDOW_MS;
+      const shouldRetryPersistentSession = hasEstablishedSession
+        && closeCode !== CLOSE_CODE_INVALID_SESSION
+        && closeCode !== CLOSE_CODE_IPHONE_REPLACED;
+
+      if (shouldRetryInitialConnect) {
+        onLog("warn", "Mac session is not available yet. Retrying the relay socket.", closeReason);
+        onConnectionState({
+          detail: "The QR was loaded, but the Mac bridge has not rejoined the relay yet. Retrying automatically.",
+          label: "Waiting for Mac",
+          status: "warning",
+        });
+        reconnectTimer = window.setTimeout(() => {
+          reconnectTimer = null;
+          openSocket({ connectStartedAt });
+        }, CONNECT_RETRY_DELAY_MS);
+        return;
+      }
+
+      rejectAllPending(closeReason);
+
+      if (shouldRetryPersistentSession) {
+        secureTransport.disconnect();
+        readyPromise = resetReadyPromise();
+        initialized = false;
+        onLog("warn", "Relay socket closed unexpectedly. Reconnecting automatically.", closeReason);
+        onConnectionState({
+          detail: "The relay socket dropped unexpectedly. Reconnecting automatically.",
+          label: "Reconnecting",
+          status: "warning",
+        });
+        reconnectTimer = window.setTimeout(() => {
+          reconnectTimer = null;
+          openSocket({ connectStartedAt: Date.now() });
+        }, UNEXPECTED_CLOSE_RETRY_DELAY_MS);
+        return;
+      }
+
+      rejectSecure(new Error(closeReason));
+      rejectReady(new Error(closeReason));
+      onConnectionState({ detail: closeReason, label: "Disconnected", status: "warning" });
+    });
+
+    activeSocket.addEventListener("error", () => {
+      rejectAllPending("Relay socket error.");
+      rejectSecure(new Error("Relay socket error."));
+      rejectReady(new Error("Relay socket error."));
+      onConnectionState({ detail: "The relay socket failed before the secure handshake completed.", label: "Socket error", status: "error" });
+    });
+
+    activeSocket.addEventListener("message", (event) => {
+      void handleWireMessage(String(event.data || "")).catch((error) => {
+        rejectSecure(error);
+        rejectReady(error);
+        onLog("error", error.message || "Failed to process a secure relay message.", "wire");
+        onConnectionState({ detail: error.message || "Failed to process a secure relay message.", label: "Secure error", status: "error" });
+      });
+    });
+
+    activeSocket.addEventListener("open", () => {
+      clearReconnectTimer();
+      onConnectionState({ detail: "Relay socket open. Starting secure pairing handshake.", label: "Pairing", status: "warning" });
+      void secureTransport.startHandshake().then((summary) => {
+        onLog("info", "Sent clientHello from the browser.", summary.phoneDeviceId);
+      }).catch((error) => {
+        rejectSecure(error);
+        rejectReady(error);
+        onLog("error", error.message || "Could not start secure pairing.", "clientHello");
+      });
+    });
+  }
+
   async function handleWireMessage(rawMessage) {
     const handled = await secureTransport.handleWireMessage(rawMessage, {
       onApplicationMessage(payloadText) {
@@ -151,6 +232,7 @@ export function createBrowserBridgeClient({
         onLog(controlMessage.kind === "secureError" ? "error" : "info", message, controlMessage.code || controlMessage.kind);
       },
       async onReady(summary) {
+        hasEstablishedSession = true;
         onConnectionState({ detail: "Secure transport established. Initializing the app-server protocol.", label: "Secure", status: "ready" });
         onLog("info", "Browser secure transport is ready.", summary.trustedMacFingerprint);
         resolveSecure();
@@ -193,8 +275,6 @@ export function createBrowserBridgeClient({
     await securePromise;
     const id = `web-${nextRequestId++}`;
     const payloadText = JSON.stringify({ id, method, params });
-    await secureTransport.sendApplicationPayload(payloadText);
-
     return new Promise((resolve, reject) => {
       const timeoutId = setTimeout(() => {
         pendingRequests.delete(id);
@@ -211,6 +291,12 @@ export function createBrowserBridgeClient({
           clearTimeout(timeoutId);
           reject(error);
         },
+      });
+
+      void secureTransport.sendApplicationPayload(payloadText).catch((error) => {
+        pendingRequests.delete(id);
+        clearTimeout(timeoutId);
+        reject(error);
       });
     });
   }
@@ -264,6 +350,14 @@ export function createBrowserBridgeClient({
       resolveSecure = resolve;
       rejectSecure = reject;
     });
+  }
+
+  function clearReconnectTimer() {
+    if (!reconnectTimer) {
+      return;
+    }
+    window.clearTimeout(reconnectTimer);
+    reconnectTimer = null;
   }
 }
 

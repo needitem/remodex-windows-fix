@@ -251,6 +251,215 @@ test("browser secure transport persists a stable browser device id", async () =>
   assert.equal(second.phoneDeviceId, "browser-device-1");
 });
 
+test("browser bridge client keeps fast model/list responses from timing out", async () => {
+  const storage = createMemoryStorage();
+  const macIdentity = createOkpKeyPair("ed25519");
+  const macEphemeral = createOkpKeyPair("x25519");
+  const previousWindow = globalThis.window;
+  const previousLocalStorage = globalThis.localStorage;
+  const previousWebSocket = globalThis.WebSocket;
+  const previousSetTimeout = globalThis.setTimeout;
+  const previousClearTimeout = globalThis.clearTimeout;
+  const fastSetTimeout = (callback, delay = 0, ...args) => previousSetTimeout(callback, Math.min(delay, 200), ...args);
+
+  globalThis.setTimeout = fastSetTimeout;
+  globalThis.clearTimeout = previousClearTimeout;
+  globalThis.window = {
+    clearTimeout: previousClearTimeout,
+    setTimeout: fastSetTimeout,
+  };
+  globalThis.localStorage = storage;
+
+  try {
+    const {
+      buildTranscriptBytes,
+      nonceForDirection,
+    } = await import(`../web/modules/browser-secure-transport.mjs?case=bridge-${Date.now()}`);
+    const { createBrowserBridgeClient } = await import(`../web/modules/browser-bridge-client.mjs?case=bridge-${Date.now()}`);
+    const relayServer = createFakeBrowserRelayServer({
+      buildTranscriptBytes,
+      macEphemeral,
+      macIdentity,
+      nonceForDirection,
+      scheduleTask: previousSetTimeout,
+    });
+
+    globalThis.WebSocket = class FakeWebSocket {
+      static CONNECTING = 0;
+      static OPEN = 1;
+      static CLOSING = 2;
+      static CLOSED = 3;
+
+      constructor(url) {
+        this.url = url;
+        this.readyState = FakeWebSocket.CONNECTING;
+        this.listeners = new Map();
+
+        previousSetTimeout(() => {
+          this.readyState = FakeWebSocket.OPEN;
+          this.dispatch("open", {});
+        }, 0);
+      }
+
+      addEventListener(type, handler) {
+        const handlers = this.listeners.get(type) || [];
+        handlers.push(handler);
+        this.listeners.set(type, handlers);
+      }
+
+      send(message) {
+        relayServer.handleOutgoing(this, String(message));
+      }
+
+      close(code = 1000, reason = "") {
+        this.readyState = FakeWebSocket.CLOSED;
+        this.dispatch("close", { code, reason });
+      }
+
+      dispatch(type, event) {
+        for (const handler of this.listeners.get(type) || []) {
+          handler(event);
+        }
+      }
+    };
+
+    const client = createBrowserBridgeClient({
+      pairingPayload: {
+        sessionId: "session-1",
+        relay: "wss://relay.example/relay",
+        macDeviceId: "mac-1",
+        macIdentityPublicKey: macIdentity.publicKey,
+      },
+    });
+
+    await client.connect();
+    const result = await client.listModels();
+
+    assert.equal(relayServer.modelListRequestCount, 1);
+    assert.equal(result.data[0].model, "gpt-5");
+    await client.disconnect();
+  } finally {
+    globalThis.window = previousWindow;
+    globalThis.localStorage = previousLocalStorage;
+    globalThis.WebSocket = previousWebSocket;
+    globalThis.setTimeout = previousSetTimeout;
+    globalThis.clearTimeout = previousClearTimeout;
+  }
+});
+
+test("browser bridge client keeps retrying after a previously ready session drops", async () => {
+  const storage = createMemoryStorage();
+  const macIdentity = createOkpKeyPair("ed25519");
+  const macEphemeral = createOkpKeyPair("x25519");
+  const previousWindow = globalThis.window;
+  const previousLocalStorage = globalThis.localStorage;
+  const previousWebSocket = globalThis.WebSocket;
+  const previousSetTimeout = globalThis.setTimeout;
+  const previousClearTimeout = globalThis.clearTimeout;
+  const previousDateNow = Date.now;
+  const fastSetTimeout = (callback, delay = 0, ...args) => previousSetTimeout(callback, Math.min(delay, 40), ...args);
+  let nowValue = 1_000;
+  const socketInstances = [];
+
+  globalThis.setTimeout = fastSetTimeout;
+  globalThis.clearTimeout = previousClearTimeout;
+  globalThis.window = {
+    clearTimeout: previousClearTimeout,
+    setTimeout: fastSetTimeout,
+  };
+  globalThis.localStorage = storage;
+  Date.now = () => nowValue;
+
+  try {
+    const {
+      buildTranscriptBytes,
+      nonceForDirection,
+    } = await import(`../web/modules/browser-secure-transport.mjs?case=persist-${Date.now()}`);
+    const { createBrowserBridgeClient } = await import(`../web/modules/browser-bridge-client.mjs?case=persist-${Date.now()}`);
+
+    globalThis.WebSocket = class FakeWebSocket {
+      static CONNECTING = 0;
+      static OPEN = 1;
+      static CLOSING = 2;
+      static CLOSED = 3;
+
+      constructor(url) {
+        this.url = url;
+        this.readyState = FakeWebSocket.CONNECTING;
+        this.listeners = new Map();
+        this.sequence = socketInstances.length + 1;
+        this.connectStartedAt = nowValue;
+        socketInstances.push(this);
+
+        previousSetTimeout(() => {
+          this.readyState = FakeWebSocket.OPEN;
+          this.dispatch("open", {});
+        }, 0);
+      }
+
+      addEventListener(type, handler) {
+        const handlers = this.listeners.get(type) || [];
+        handlers.push(handler);
+        this.listeners.set(type, handlers);
+      }
+
+      send(message) {
+        const parsed = JSON.parse(String(message));
+
+        if (this.sequence === 1) {
+          handleInitialSessionMessage({
+            buildTranscriptBytes,
+            macEphemeral,
+            macIdentity,
+            nonceForDirection,
+            parsed,
+            socket: this,
+          });
+          return;
+        }
+
+        if (this.sequence === 2 && parsed.kind === "clientHello") {
+          nowValue = this.connectStartedAt + 13_000;
+          this.close(4002, "Mac session not available");
+        }
+      }
+
+      close(code = 1000, reason = "") {
+        this.readyState = FakeWebSocket.CLOSED;
+        this.dispatch("close", { code, reason });
+      }
+
+      dispatch(type, event) {
+        for (const handler of this.listeners.get(type) || []) {
+          handler(event);
+        }
+      }
+    };
+
+    const client = createBrowserBridgeClient({
+      pairingPayload: {
+        sessionId: "session-1",
+        relay: "wss://relay.example/relay",
+        macDeviceId: "mac-1",
+        macIdentityPublicKey: macIdentity.publicKey,
+      },
+    });
+
+    await client.connect();
+    socketInstances[0].close(4002, "Mac disconnected");
+    await new Promise((resolve) => previousSetTimeout(resolve, 200));
+    assert.ok(socketInstances.length >= 3, "expected the browser client to keep retrying");
+    await client.disconnect();
+  } finally {
+    globalThis.window = previousWindow;
+    globalThis.localStorage = previousLocalStorage;
+    globalThis.WebSocket = previousWebSocket;
+    globalThis.setTimeout = previousSetTimeout;
+    globalThis.clearTimeout = previousClearTimeout;
+    Date.now = previousDateNow;
+  }
+});
+
 function createMemoryStorage() {
   const map = new Map();
   return {
@@ -313,4 +522,306 @@ function base64UrlToBase64(value) {
 
 function base64ToBase64Url(value) {
   return value.replace(/\+/g, "-").replace(/\//g, "_").replace(/=+$/g, "");
+}
+
+function createFakeBrowserRelayServer({
+  buildTranscriptBytes,
+  macEphemeral,
+  macIdentity,
+  nonceForDirection,
+  scheduleTask,
+}) {
+  let bridgeOutboundSeq = 0;
+  let clientHello = null;
+  let macToPhoneKey = null;
+  let phoneToMacKey = null;
+
+  return {
+    modelListRequestCount: 0,
+    handleOutgoing(socket, rawMessage) {
+      const parsed = JSON.parse(rawMessage);
+
+      if (parsed.kind === "clientHello") {
+        clientHello = parsed;
+        const serverNonce = Buffer.alloc(32, 7);
+        const transcriptBytes = Buffer.from(buildTranscriptBytes({
+          sessionId: "session-1",
+          protocolVersion: 1,
+          handshakeMode: "qr_bootstrap",
+          keyEpoch: 1,
+          macDeviceId: "mac-1",
+          phoneDeviceId: clientHello.phoneDeviceId,
+          macIdentityPublicKey: macIdentity.publicKey,
+          phoneIdentityPublicKey: clientHello.phoneIdentityPublicKey,
+          macEphemeralPublicKey: macEphemeral.publicKey,
+          phoneEphemeralPublicKey: clientHello.phoneEphemeralPublicKey,
+          clientNonce: Buffer.from(clientHello.clientNonce, "base64"),
+          serverNonce,
+          expiresAtForTranscript: 123,
+        }));
+        const macSignature = sign(
+          null,
+          transcriptBytes,
+          createPrivateKey({
+            key: {
+              crv: "Ed25519",
+              d: base64ToBase64Url(macIdentity.privateKey),
+              kty: "OKP",
+              x: base64ToBase64Url(macIdentity.publicKey),
+            },
+            format: "jwk",
+          })
+        );
+        const sharedSecret = diffieHellman({
+          privateKey: createPrivateKey({
+            key: {
+              crv: "X25519",
+              d: base64ToBase64Url(macEphemeral.privateKey),
+              kty: "OKP",
+              x: base64ToBase64Url(macEphemeral.publicKey),
+            },
+            format: "jwk",
+          }),
+          publicKey: createPublicKey({
+            key: {
+              crv: "X25519",
+              kty: "OKP",
+              x: base64ToBase64Url(clientHello.phoneEphemeralPublicKey),
+            },
+            format: "jwk",
+          }),
+        });
+        const salt = createHash("sha256").update(transcriptBytes).digest();
+        const infoPrefix = `remodex-e2ee-v1|session-1|mac-1|${clientHello.phoneDeviceId}|1`;
+        macToPhoneKey = Buffer.from(hkdfSync("sha256", sharedSecret, salt, Buffer.from(`${infoPrefix}|macToPhone`, "utf8"), 32));
+        phoneToMacKey = Buffer.from(hkdfSync("sha256", sharedSecret, salt, Buffer.from(`${infoPrefix}|phoneToMac`, "utf8"), 32));
+
+        socket.dispatch("message", {
+          data: JSON.stringify({
+            kind: "serverHello",
+            protocolVersion: 1,
+            sessionId: "session-1",
+            handshakeMode: "qr_bootstrap",
+            macDeviceId: "mac-1",
+            macIdentityPublicKey: macIdentity.publicKey,
+            macEphemeralPublicKey: macEphemeral.publicKey,
+            serverNonce: serverNonce.toString("base64"),
+            keyEpoch: 1,
+            expiresAtForTranscript: 123,
+            macSignature: macSignature.toString("base64"),
+            clientNonce: clientHello.clientNonce,
+          }),
+        });
+        return;
+      }
+
+      if (parsed.kind === "clientAuth") {
+        scheduleTask(() => {
+          socket.dispatch("message", {
+            data: JSON.stringify({
+              kind: "secureReady",
+              sessionId: "session-1",
+              keyEpoch: 1,
+              macDeviceId: "mac-1",
+            }),
+          });
+        }, 0);
+        return;
+      }
+
+      if (parsed.kind !== "encryptedEnvelope") {
+        return;
+      }
+
+      const outboundPayload = decryptEnvelope(parsed, phoneToMacKey, nonceForDirection);
+      const rpcMessage = JSON.parse(outboundPayload.payloadText);
+
+      if (rpcMessage.method === "initialize") {
+        scheduleTask(() => {
+          socket.dispatch("message", {
+            data: JSON.stringify(encryptEnvelope(
+              {
+                bridgeOutboundSeq: ++bridgeOutboundSeq,
+                payloadText: JSON.stringify({
+                  id: rpcMessage.id,
+                  result: { ok: true },
+                }),
+              },
+              macToPhoneKey,
+              "mac",
+              0,
+              "session-1",
+              1,
+              nonceForDirection
+            )),
+          });
+        }, 0);
+        return;
+      }
+
+      if (rpcMessage.method === "model/list") {
+        this.modelListRequestCount += 1;
+        socket.dispatch("message", {
+          data: JSON.stringify(encryptEnvelope(
+            {
+              bridgeOutboundSeq: ++bridgeOutboundSeq,
+              payloadText: JSON.stringify({
+                id: rpcMessage.id,
+                result: {
+                  data: [
+                    {
+                      defaultReasoningEffort: "medium",
+                      displayName: "GPT-5",
+                      hidden: false,
+                      isDefault: true,
+                      model: "gpt-5",
+                      supportedReasoningEfforts: [
+                        {
+                          description: "Balanced",
+                          reasoningEffort: "medium",
+                        },
+                      ],
+                    },
+                  ],
+                },
+              }),
+            },
+            macToPhoneKey,
+            "mac",
+            1,
+            "session-1",
+            1,
+            nonceForDirection
+          )),
+        });
+      }
+    },
+  };
+}
+
+function handleInitialSessionMessage({
+  buildTranscriptBytes,
+  macEphemeral,
+  macIdentity,
+  nonceForDirection,
+  parsed,
+  socket,
+}) {
+  if (parsed.kind === "clientHello") {
+    const clientHello = parsed;
+    const serverNonce = Buffer.alloc(32, 7);
+    const transcriptBytes = Buffer.from(buildTranscriptBytes({
+      sessionId: "session-1",
+      protocolVersion: 1,
+      handshakeMode: "qr_bootstrap",
+      keyEpoch: 1,
+      macDeviceId: "mac-1",
+      phoneDeviceId: clientHello.phoneDeviceId,
+      macIdentityPublicKey: macIdentity.publicKey,
+      phoneIdentityPublicKey: clientHello.phoneIdentityPublicKey,
+      macEphemeralPublicKey: macEphemeral.publicKey,
+      phoneEphemeralPublicKey: clientHello.phoneEphemeralPublicKey,
+      clientNonce: Buffer.from(clientHello.clientNonce, "base64"),
+      serverNonce,
+      expiresAtForTranscript: 123,
+    }));
+    const macSignature = sign(
+      null,
+      transcriptBytes,
+      createPrivateKey({
+        key: {
+          crv: "Ed25519",
+          d: base64ToBase64Url(macIdentity.privateKey),
+          kty: "OKP",
+          x: base64ToBase64Url(macIdentity.publicKey),
+        },
+        format: "jwk",
+      })
+    );
+
+    const sharedSecret = diffieHellman({
+      privateKey: createPrivateKey({
+        key: {
+          crv: "X25519",
+          d: base64ToBase64Url(macEphemeral.privateKey),
+          kty: "OKP",
+          x: base64ToBase64Url(macEphemeral.publicKey),
+        },
+        format: "jwk",
+      }),
+      publicKey: createPublicKey({
+        key: {
+          crv: "X25519",
+          kty: "OKP",
+          x: base64ToBase64Url(clientHello.phoneEphemeralPublicKey),
+        },
+        format: "jwk",
+      }),
+    });
+    const salt = createHash("sha256").update(transcriptBytes).digest();
+    const infoPrefix = `remodex-e2ee-v1|session-1|mac-1|${clientHello.phoneDeviceId}|1`;
+    socket.macToPhoneKey = Buffer.from(hkdfSync("sha256", sharedSecret, salt, Buffer.from(`${infoPrefix}|macToPhone`, "utf8"), 32));
+    socket.phoneToMacKey = Buffer.from(hkdfSync("sha256", sharedSecret, salt, Buffer.from(`${infoPrefix}|phoneToMac`, "utf8"), 32));
+    socket.bridgeOutboundSeq = 0;
+
+    socket.dispatch("message", {
+      data: JSON.stringify({
+        kind: "serverHello",
+        protocolVersion: 1,
+        sessionId: "session-1",
+        handshakeMode: "qr_bootstrap",
+        macDeviceId: "mac-1",
+        macIdentityPublicKey: macIdentity.publicKey,
+        macEphemeralPublicKey: macEphemeral.publicKey,
+        serverNonce: serverNonce.toString("base64"),
+        keyEpoch: 1,
+        expiresAtForTranscript: 123,
+        macSignature: macSignature.toString("base64"),
+        clientNonce: clientHello.clientNonce,
+      }),
+    });
+    return;
+  }
+
+  if (parsed.kind === "clientAuth") {
+    setTimeout(() => {
+      socket.dispatch("message", {
+        data: JSON.stringify({
+          kind: "secureReady",
+          sessionId: "session-1",
+          keyEpoch: 1,
+          macDeviceId: "mac-1",
+        }),
+      });
+    }, 0);
+    return;
+  }
+
+  if (parsed.kind !== "encryptedEnvelope") {
+    return;
+  }
+
+  const outboundPayload = decryptEnvelope(parsed, socket.phoneToMacKey, nonceForDirection);
+  const rpcMessage = JSON.parse(outboundPayload.payloadText);
+  if (rpcMessage.method !== "initialize") {
+    return;
+  }
+
+  socket.dispatch("message", {
+    data: JSON.stringify(encryptEnvelope(
+      {
+        bridgeOutboundSeq: ++socket.bridgeOutboundSeq,
+        payloadText: JSON.stringify({
+          id: rpcMessage.id,
+          result: { ok: true },
+        }),
+      },
+      socket.macToPhoneKey,
+      "mac",
+      0,
+      "session-1",
+      1,
+      nonceForDirection
+    )),
+  });
 }

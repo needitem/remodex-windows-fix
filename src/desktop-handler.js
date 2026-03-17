@@ -70,10 +70,10 @@ async function handleDesktopMethod(method, params, options = {}) {
   const threadMaterializeWaitMs = options.threadMaterializeWaitMs ?? DEFAULT_THREAD_MATERIALIZE_WAIT_MS;
   const threadMaterializePollMs = options.threadMaterializePollMs ?? DEFAULT_THREAD_MATERIALIZE_POLL_MS;
 
-  if (platform !== "darwin") {
+  if (platform !== "darwin" && platform !== "win32") {
     throw desktopError(
       "unsupported_platform",
-      "Mac handoff is only available when the bridge is running on macOS."
+      "Desktop handoff is only available when the bridge is running on macOS or Windows."
     );
   }
 
@@ -120,6 +120,27 @@ async function continueOnMac(
   }
 
   const targetUrl = `codex://threads/${threadId}`;
+  if (process.platform === "win32") {
+    try {
+      await focusOrLaunchWindowsCodexApp(executor);
+    } catch (error) {
+      throw desktopError(
+        "handoff_failed",
+        "Could not focus or open Codex on Windows.",
+        error
+      );
+    }
+
+    return {
+      success: true,
+      relaunched: false,
+      targetUrl: "",
+      threadId,
+      desktopKnown: true,
+      handoffMode: "focus-only",
+    };
+  }
+
   const desktopKnown = isThreadLikelyKnownOnDesktop(threadId, { env, fsModule });
   const appRunning = typeof isAppRunning === "function"
     ? await isAppRunning(appPath)
@@ -361,6 +382,32 @@ async function waitForThreadMaterialization(
 
 function sleep(ms) {
   return new Promise((resolve) => setTimeout(resolve, ms));
+}
+
+async function focusOrLaunchWindowsCodexApp(executor) {
+  const script = [
+    "Add-Type @'",
+    "using System;",
+    "using System.Runtime.InteropServices;",
+    "public static class Win32 {",
+    "  [DllImport(\"user32.dll\")] public static extern bool SetForegroundWindow(IntPtr hWnd);",
+    "  [DllImport(\"user32.dll\")] public static extern bool ShowWindowAsync(IntPtr hWnd, int nCmdShow);",
+    "}",
+    "'@",
+    "$window = Get-Process Codex -ErrorAction SilentlyContinue | Where-Object { $_.MainWindowHandle -ne 0 } | Select-Object -First 1",
+    "if ($window) {",
+    "  [Win32]::ShowWindowAsync($window.MainWindowHandle, 9) | Out-Null",
+    "  [Win32]::SetForegroundWindow($window.MainWindowHandle) | Out-Null",
+    "  exit 0",
+    "}",
+    "$pkg = Get-AppxPackage OpenAI.Codex -ErrorAction SilentlyContinue | Select-Object -First 1",
+    "if (-not $pkg) { throw 'Codex app is not installed.' }",
+    "Start-Process explorer.exe \"shell:AppsFolder\\$($pkg.PackageFamilyName)!App\"",
+  ].join("; ");
+
+  await executor("powershell.exe", ["-NoProfile", "-Command", script], {
+    timeout: HANDOFF_TIMEOUT_MS,
+  });
 }
 
 module.exports = {

@@ -168,7 +168,13 @@ class CodexDesktopRefresher {
 
   executeRefresh(targetUrl) {
     if (this.refreshCommand) {
-      return execFilePromise("/bin/sh", ["-lc", this.refreshCommand]);
+      return process.platform === "win32"
+        ? execFilePromise("powershell.exe", ["-NoProfile", "-Command", this.refreshCommand])
+        : execFilePromise("/bin/sh", ["-lc", this.refreshCommand]);
+    }
+
+    if (process.platform === "win32") {
+      return focusOrLaunchWindowsCodexApp();
     }
 
     return execFilePromise("osascript", [
@@ -202,6 +208,7 @@ class CodexDesktopRefresher {
 }
 
 function readBridgeConfig() {
+  const refreshEnabledDefault = process.platform === "win32" ? "true" : "false";
   return {
     relayUrl: readFirstDefinedEnv(["REMODEX_RELAY", "PHODEX_RELAY"], "wss://api.phodex.app/relay"),
     pushServiceUrl: readFirstDefinedEnv(["REMODEX_PUSH_SERVICE_URL"], ""),
@@ -209,7 +216,7 @@ function readBridgeConfig() {
       readFirstDefinedEnv(["REMODEX_PUSH_PREVIEW_MAX_CHARS"], "160"),
       160
     ),
-    refreshEnabled: parseBooleanEnv(readFirstDefinedEnv(["REMODEX_REFRESH_ENABLED"], "false")),
+    refreshEnabled: parseBooleanEnv(readFirstDefinedEnv(["REMODEX_REFRESH_ENABLED"], refreshEnabledDefault)),
     refreshDebounceMs: parseIntegerEnv(
       readFirstDefinedEnv(["REMODEX_REFRESH_DEBOUNCE_MS"], String(DEFAULT_DEBOUNCE_MS)),
       DEFAULT_DEBOUNCE_MS
@@ -220,8 +227,32 @@ function readBridgeConfig() {
       ""
     ),
     codexBundleId: readFirstDefinedEnv(["REMODEX_CODEX_BUNDLE_ID"], DEFAULT_BUNDLE_ID),
-    codexAppPath: DEFAULT_APP_PATH,
+    codexAppPath: readFirstDefinedEnv(["REMODEX_CODEX_APP_PATH"], DEFAULT_APP_PATH),
   };
+}
+
+function focusOrLaunchWindowsCodexApp() {
+  const script = [
+    "Add-Type @'",
+    "using System;",
+    "using System.Runtime.InteropServices;",
+    "public static class Win32 {",
+    "  [DllImport(\"user32.dll\")] public static extern bool SetForegroundWindow(IntPtr hWnd);",
+    "  [DllImport(\"user32.dll\")] public static extern bool ShowWindowAsync(IntPtr hWnd, int nCmdShow);",
+    "}",
+    "'@",
+    "$window = Get-Process Codex -ErrorAction SilentlyContinue | Where-Object { $_.MainWindowHandle -ne 0 } | Select-Object -First 1",
+    "if ($window) {",
+    "  [Win32]::ShowWindowAsync($window.MainWindowHandle, 9) | Out-Null",
+    "  [Win32]::SetForegroundWindow($window.MainWindowHandle) | Out-Null",
+    "  exit 0",
+    "}",
+    "$pkg = Get-AppxPackage OpenAI.Codex -ErrorAction SilentlyContinue | Select-Object -First 1",
+    "if (-not $pkg) { throw 'Codex app is not installed.' }",
+    "Start-Process explorer.exe \"shell:AppsFolder\\$($pkg.PackageFamilyName)!App\"",
+  ].join("; ");
+
+  return execFilePromise("powershell.exe", ["-NoProfile", "-Command", script]);
 }
 
 function execFilePromise(command, args) {
