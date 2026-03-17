@@ -125,11 +125,26 @@ Or use the bundled binary directly:
 remodex-relay
 ```
 
+Docker Compose:
+
+```bash
+docker compose up -d
+```
+
 Optional relay host/port overrides:
 
 ```powershell
 $env:REMODEX_RELAY_HOST = "0.0.0.0"
 $env:REMODEX_RELAY_PORT = "9000"
+```
+
+Optional relay hardening overrides:
+
+```powershell
+$env:REMODEX_TRUST_PROXY = "true"
+$env:REMODEX_RELAY_EXPOSE_DETAILED_HEALTH = "true"
+$env:REMODEX_RELAY_UPGRADE_WINDOW_MS = "60000"
+$env:REMODEX_RELAY_UPGRADE_MAX_PER_WINDOW = "60"
 ```
 
 Point the bridge at your relay:
@@ -146,6 +161,9 @@ Health endpoint:
 ```text
 GET /health
 ```
+
+By default the relay returns a minimal health payload. Set `REMODEX_RELAY_EXPOSE_DETAILED_HEALTH=true`
+if you want `/health` to include session counters for monitoring.
 
 ## Cloudflare Deploy
 
@@ -222,6 +240,8 @@ C:\Users\th072\AppData\Roaming\npm\codex.cmd app-server
 ```text
 bin/
 cloudflare/
+compose.yaml
+Dockerfile
 relay/
 src/
 wrangler.toml

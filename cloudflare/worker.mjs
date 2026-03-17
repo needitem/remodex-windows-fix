@@ -75,7 +75,7 @@ export class SessionRelay extends DurableObject {
     const [clientSocket, serverSocket] = Object.values(pair);
 
     this.ctx.acceptWebSocket(serverSocket);
-    serverSocket.serializeAttachment({ role });
+    serverSocket.serializeAttachment({ role, sessionId });
 
     if (role === "mac") {
       this.notificationSecret = readHeaderString(request.headers.get("x-notification-secret"));
@@ -87,7 +87,7 @@ export class SessionRelay extends DurableObject {
         );
       }
       this.mac = serverSocket;
-      console.log(`[relay] Mac connected -> session ${sessionId}`);
+      console.log(`[relay] Mac connected -> ${relaySessionLogLabel(sessionId)}`);
     } else {
       for (const existingClient of this.clients) {
         if (existingClient === serverSocket) {
@@ -100,7 +100,7 @@ export class SessionRelay extends DurableObject {
         );
       }
       this.clients = new Set([serverSocket]);
-      console.log(`[relay] iPhone connected -> session ${sessionId} (1 client)`);
+      console.log(`[relay] iPhone connected -> ${relaySessionLogLabel(sessionId)} (1 client)`);
     }
 
     return new Response(null, { status: 101, webSocket: clientSocket });
@@ -127,17 +127,23 @@ export class SessionRelay extends DurableObject {
   }
 
   async webSocketError(socket, error) {
-    console.error("[relay] WebSocket error:", error?.message || String(error));
+    const metadata = socket.deserializeAttachment() || {};
+    console.error(
+      `[relay] WebSocket error (${metadata.role || "unknown"}, ${relaySessionLogLabel(metadata.sessionId)}):`,
+      error?.message || String(error)
+    );
     await this.dropSocket(socket);
   }
 
   async dropSocket(socket) {
     const metadata = socket.deserializeAttachment() || {};
+    const sessionLabel = relaySessionLogLabel(metadata.sessionId);
 
     if (metadata.role === "mac") {
       if (this.mac === socket) {
         this.mac = null;
         this.notificationSecret = null;
+        console.log(`[relay] Mac disconnected -> ${sessionLabel}`);
         for (const client of this.clients) {
           this.safeClose(client, CLOSE_CODE_SESSION_UNAVAILABLE, "Mac disconnected");
         }
@@ -145,6 +151,7 @@ export class SessionRelay extends DurableObject {
       }
     } else if (metadata.role === "iphone") {
       this.clients.delete(socket);
+      console.log(`[relay] iPhone disconnected -> ${sessionLabel} (${this.clients.size} remaining)`);
     }
   }
 
@@ -195,6 +202,25 @@ function closeWebSocketResponse(code, reason) {
 
 function readHeaderString(value) {
   return typeof value === "string" && value.trim() ? value.trim() : null;
+}
+
+function relaySessionLogLabel(sessionId) {
+  const normalizedSessionId = typeof sessionId === "string" ? sessionId.trim() : "";
+  if (!normalizedSessionId) {
+    return "session=[redacted]";
+  }
+
+  return `session#${shortDigestHex(normalizedSessionId)}`;
+}
+
+function shortDigestHex(value) {
+  let hash = 2166136261;
+  for (let index = 0; index < value.length; index += 1) {
+    hash ^= value.charCodeAt(index);
+    hash = Math.imul(hash, 16777619);
+  }
+
+  return (hash >>> 0).toString(16).padStart(8, "0");
 }
 
 function jsonResponse(value) {

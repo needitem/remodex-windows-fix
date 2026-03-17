@@ -3,6 +3,7 @@
 // Layer: Standalone server module
 // Exports: setupRelay, getRelayStats, hasActiveMacSession, hasAuthenticatedMacSession
 
+const { createHash, timingSafeEqual } = require("crypto");
 const { WebSocket } = require("ws");
 
 const CLEANUP_DELAY_MS = 60_000;
@@ -80,7 +81,7 @@ function setupRelay(wss) {
         session.mac.close(4001, "Replaced by new Mac connection");
       }
       session.mac = ws;
-      console.log(`[relay] Mac connected -> session ${sessionId}`);
+      console.log(`[relay] Mac connected -> ${relaySessionLogLabel(sessionId)}`);
     } else {
       // Keep one live iPhone RPC client per session to avoid competing sockets.
       for (const existingClient of session.clients) {
@@ -101,7 +102,7 @@ function setupRelay(wss) {
 
       session.clients.add(ws);
       console.log(
-        `[relay] iPhone connected -> session ${sessionId} (${session.clients.size} client(s))`
+        `[relay] iPhone connected -> ${relaySessionLogLabel(sessionId)} (${session.clients.size} client(s))`
       );
     }
 
@@ -124,7 +125,7 @@ function setupRelay(wss) {
         if (session.mac === ws) {
           session.mac = null;
           session.notificationSecret = null;
-          console.log(`[relay] Mac disconnected -> session ${sessionId}`);
+          console.log(`[relay] Mac disconnected -> ${relaySessionLogLabel(sessionId)}`);
           for (const client of session.clients) {
             if (client.readyState === WebSocket.OPEN || client.readyState === WebSocket.CONNECTING) {
               client.close(CLOSE_CODE_SESSION_UNAVAILABLE, "Mac disconnected");
@@ -134,7 +135,7 @@ function setupRelay(wss) {
       } else {
         session.clients.delete(ws);
         console.log(
-          `[relay] iPhone disconnected -> session ${sessionId} (${session.clients.size} remaining)`
+          `[relay] iPhone disconnected -> ${relaySessionLogLabel(sessionId)} (${session.clients.size} remaining)`
         );
       }
       scheduleCleanup(sessionId);
@@ -142,7 +143,7 @@ function setupRelay(wss) {
 
     ws.on("error", (err) => {
       console.error(
-        `[relay] WebSocket error (${role}, session ${sessionId}):`,
+        `[relay] WebSocket error (${role}, ${relaySessionLogLabel(sessionId)}):`,
         err.message
       );
     });
@@ -162,7 +163,7 @@ function scheduleCleanup(sessionId) {
     const activeSession = sessions.get(sessionId);
     if (activeSession && !activeSession.mac && activeSession.clients.size === 0) {
       sessions.delete(sessionId);
-      console.log(`[relay] Session ${sessionId} cleaned up`);
+      console.log(`[relay] ${relaySessionLogLabel(sessionId)} cleaned up`);
     }
   }, CLEANUP_DELAY_MS);
   session.cleanupTimer.unref?.();
@@ -204,7 +205,7 @@ function hasAuthenticatedMacSession(sessionId, notificationSecret) {
   }
 
   const session = sessions.get(sessionId.trim());
-  return session?.notificationSecret === readHeaderString(notificationSecret);
+  return timingSafeSecretMatch(session?.notificationSecret, readHeaderString(notificationSecret));
 }
 
 function readHeaderString(value) {
@@ -212,9 +213,38 @@ function readHeaderString(value) {
   return typeof candidate === "string" && candidate.trim() ? candidate.trim() : null;
 }
 
+function relaySessionLogLabel(sessionId) {
+  const normalizedSessionId = typeof sessionId === "string" ? sessionId.trim() : "";
+  if (!normalizedSessionId) {
+    return "session=[redacted]";
+  }
+
+  const digest = createHash("sha256").update(normalizedSessionId).digest("hex");
+  return `session#${digest.slice(0, 8)}`;
+}
+
+function timingSafeSecretMatch(left, right) {
+  const normalizedLeft = typeof left === "string" && left.trim() ? left.trim() : "";
+  const normalizedRight = typeof right === "string" && right.trim() ? right.trim() : "";
+  if (!normalizedLeft || !normalizedRight || normalizedLeft.length !== normalizedRight.length) {
+    return false;
+  }
+
+  try {
+    return timingSafeEqual(
+      Buffer.from(normalizedLeft, "utf8"),
+      Buffer.from(normalizedRight, "utf8")
+    );
+  } catch {
+    return false;
+  }
+}
+
 module.exports = {
   setupRelay,
   getRelayStats,
   hasActiveMacSession,
   hasAuthenticatedMacSession,
+  relaySessionLogLabel,
+  timingSafeSecretMatch,
 };
