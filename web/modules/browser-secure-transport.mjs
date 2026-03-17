@@ -356,7 +356,7 @@ async function handleEncryptedEnvelope({
 }) {
   const activeSession = activeSessionRef();
   if (!activeSession?.isReady) {
-    throw new Error("Secure channel is not ready yet.");
+    return;
   }
   if (
     message.sessionId !== activeSession.sessionId
