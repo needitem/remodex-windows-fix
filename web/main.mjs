@@ -451,15 +451,18 @@ function renderThreadSpotlight(chat) {
 
 function renderComposerState(chat) {
   const hasPendingTurn = chatHasPendingTurn(chat);
+  const isSharedView = messageOriginForChat(chat) === "shared";
   elements.sendButton.disabled = !chat || hasPendingTurn;
   elements.sendButton.dataset.loading = hasPendingTurn ? "true" : "false";
   elements.sendButton.setAttribute("aria-busy", hasPendingTurn ? "true" : "false");
-  elements.sendButton.textContent = hasPendingTurn ? "Running..." : (!chat ? "Select Chat" : "Send");
+  elements.sendButton.textContent = hasPendingTurn ? "Running..." : (!chat ? "Select Chat" : (isSharedView ? "Fork & Send" : "Send"));
   elements.composerInput.placeholder = !chat
     ? "Choose a chat or create a local draft to start sending."
     : (hasPendingTurn
       ? "Wait for the current turn to finish before sending another prompt."
-      : "Ask anything... @files, $skills, /commands");
+      : (isSharedView
+        ? "This shared thread is read-only here. Sending will fork into an isolated web thread."
+        : "Ask anything... @files, $skills, /commands"));
 }
 
 function renderSettings() {
@@ -566,9 +569,12 @@ async function sendMessage() {
       persistThreadCacheForChat(chat);
       await refreshThreadList(chat.threadId);
     } else if (!chat.writable) {
+      const forkResponse = await state.client.forkThread(buildThreadForkParams(chat));
+      adoptRemoteThreadForChat(chat, forkResponse.thread);
       chat.writable = true;
       persistThreadCacheForChat(chat);
-      addLog("info", "Continuing on the existing shared session thread.", chat.id);
+      addLog("info", "Forked shared thread into an isolated web thread.", chat.id);
+      await refreshThreadList(chat.threadId);
     }
 
     addLog("info", "Started a real remote turn.", truncate(text, 42));
@@ -738,8 +744,8 @@ async function connectRelay({ restoreThread = false } = {}) {
     state.bridgeActiveThreadId = activeThreadResult?.thread?.threadId || null;
     await refreshThreadList(
       restoreThread
-        ? (state.bridgeActiveThreadId || loadStoredLastThreadId())
-        : (state.bridgeActiveThreadId || state.selectedChatId)
+        ? (loadStoredLastThreadId() || state.bridgeActiveThreadId)
+        : (state.selectedChatId || state.bridgeActiveThreadId)
     );
     void refreshModelCatalog().catch((error) => {
       addLog("warn", "Could not load the model catalog yet.", error.message || "model/list");
@@ -2194,11 +2200,11 @@ function describeThreadMode(chat) {
     return "Local draft";
   }
   if (chat.threadId === state.bridgeActiveThreadId) {
-    return "Shared session thread";
+    return "Shared session view";
   }
   return chat.writable
-    ? "Web-writable thread"
-    : "Desktop mirror thread";
+    ? "Isolated web thread"
+    : "Desktop mirror view";
 }
 
 function renderThreadModeChip(chat) {
@@ -2215,11 +2221,11 @@ function renderThreadModeChip(chat) {
 function threadModeChipLabel(origin) {
   switch (origin) {
     case "web":
-      return "Web Writable";
+      return "Web Isolated";
     case "shared":
-      return "Shared Session";
+      return "Shared View";
     case "desktop":
-      return "Desktop Mirror";
+      return "Desktop View";
     case "local":
       return "Local Draft";
     default:
