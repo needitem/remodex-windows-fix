@@ -1037,6 +1037,11 @@ function handleNotification(notification) {
     return;
   }
 
+  if (method === "codex/event/background_event") {
+    applyBackgroundEventNotification(notification.params);
+    return;
+  }
+
   if (method === "codex/event/exec_command_begin") {
     applyExecCommandBeginNotification(notification.params);
     return;
@@ -1269,6 +1274,21 @@ function extractMessagesFromThread(thread) {
           author: "Codex",
           time: item.phase || turn.status,
           text: item.text,
+        });
+      } else if (item.type === "commandExecution") {
+        const command = typeof item.command === "string" ? item.command : "";
+        const rawOutput = normalizeCommandOutput(item.output || item.rawOutput || item.text || "");
+        messages.push({
+          id: item.id || `command:${turn.id || turn.turnId || messages.length}:${messages.length}`,
+          role: "assistant",
+          author: "Shell",
+          kind: "command",
+          time: item.status || turn.status,
+          command,
+          summary: summarizeCommandForDisplay(command || "Command"),
+          preview: buildCommandPreview(rawOutput),
+          rawOutput,
+          text: "",
         });
       } else if (item.type === "reasoning" && item.summary?.length) {
         messages.push({
@@ -1594,6 +1614,18 @@ function applyCompletedItemNotification(params) {
     }
   }
 
+  if (item.type === "commandExecution") {
+    const command = typeof item.command === "string" ? item.command : "";
+    const commandId = item.id || `command:${hashString(`${command}\n${item.text || item.output || item.rawOutput || ""}`)}`;
+    const message = ensureCommandMessage(chat, commandId, command);
+    const rawOutput = normalizeCommandOutput(item.output || item.rawOutput || item.text || "");
+    if (rawOutput) {
+      message.rawOutput = rawOutput;
+    }
+    message.preview = buildCommandPreview(message.rawOutput);
+    message.time = "completed";
+  }
+
   persistThreadCacheForChat(chat);
   if (selectedChat()?.id === chat.id) {
     renderConversation();
@@ -1620,22 +1652,17 @@ function applyStartedItemNotification(params) {
         author: "Reasoning",
         origin: messageOriginForChat(chat),
         time: "thinking",
-        text: "",
+        text: "Thinking...",
       });
     }
   }
 
   if (item.type === "commandExecution") {
-    if (!chat.messages.find((entry) => entry.id === item.id)) {
-      chat.messages.push({
-        id: item.id,
-        role: "assistant",
-        author: "Command",
-        origin: messageOriginForChat(chat),
-        time: "running",
-        text: item.command || "Running command...",
-      });
-    }
+    const command = typeof item.command === "string" ? item.command : "";
+    const commandId = item.id || `command:${hashString(`${command}\n${item.text || item.output || item.rawOutput || ""}`)}`;
+    const message = ensureCommandMessage(chat, commandId, command);
+    message.preview = "Running...";
+    message.time = "running";
   }
 
   persistThreadCacheForChat(chat);
@@ -1649,9 +1676,6 @@ function applyReasoningDeltaNotification(params, method) {
   const itemId = params?.itemId;
   const delta = typeof params?.delta === "string" ? params.delta : "";
   if (!threadId || !itemId || !delta) {
-    return;
-  }
-  if (method === "item/reasoning/textDelta" && delta.trim() === "Thinking...") {
     return;
   }
 
@@ -1671,6 +1695,21 @@ function applyReasoningDeltaNotification(params, method) {
       text: "",
     };
     chat.messages.push(message);
+  }
+
+  if (method === "item/reasoning/textDelta" && delta.trim() === "Thinking...") {
+    if (!message.text) {
+      message.text = "Thinking...";
+    }
+    persistThreadCacheForChat(chat);
+    if (selectedChat()?.id === chat.id) {
+      renderConversation();
+    }
+    return;
+  }
+
+  if (message.text === "Thinking...") {
+    message.text = "";
   }
 
   if (method === "item/reasoning/summaryTextDelta" && message.text && !message.text.endsWith("\n")) {
@@ -1696,20 +1735,10 @@ function applyCommandOutputDeltaNotification(params) {
     return;
   }
 
-  let message = chat.messages.find((entry) => entry.id === itemId);
-  if (!message) {
-    message = {
-      id: itemId,
-      role: "assistant",
-      author: "Command",
-      origin: messageOriginForChat(chat),
-      time: "running",
-      text: "",
-    };
-    chat.messages.push(message);
-  }
-
-  message.text += delta;
+  const message = ensureCommandMessage(chat, itemId, params?.command || "");
+  message.rawOutput = `${message.rawOutput || ""}${message.rawOutput ? "\n" : ""}${delta}`;
+  message.preview = buildCommandPreview(message.rawOutput);
+  message.time = "running";
   persistThreadCacheForChat(chat);
   if (selectedChat()?.id === chat.id) {
     renderConversation();
@@ -1760,6 +1789,7 @@ function applyCodexAgentMessageNotification(params) {
   const threadId = params?.threadId;
   const turnId = params?.turnId || "";
   const messageText = typeof params?.message === "string" ? params.message : "";
+  const phase = normalizeLivePhase(params?.phase);
   if (!threadId || !messageText) {
     return;
   }
@@ -1770,11 +1800,11 @@ function applyCodexAgentMessageNotification(params) {
   }
 
   chat.messages = chat.messages.filter((entry) => !entry.pending);
-  const messageId = `codex-agent:${turnId || messageText}`;
+  const messageId = `codex-agent:${turnId || "turn"}:${phase}:${hashString(messageText)}`;
   const existing = chat.messages.find((entry) => entry.id === messageId);
   if (existing) {
     existing.text = messageText;
-    existing.time = "final_answer";
+    existing.time = phase;
     existing.origin = messageOriginForChat(chat);
   } else {
     chat.messages.push({
@@ -1782,7 +1812,7 @@ function applyCodexAgentMessageNotification(params) {
       role: "assistant",
       author: "Codex",
       origin: messageOriginForChat(chat),
-      time: "final_answer",
+      time: phase,
       text: messageText,
     });
   }
@@ -1792,6 +1822,88 @@ function applyCodexAgentMessageNotification(params) {
   if (selectedChat()?.id === chat.id) {
     renderConversation();
   }
+}
+
+function applyBackgroundEventNotification(params) {
+  const threadId = params?.threadId;
+  const turnId = params?.turnId || "";
+  const callId = params?.call_id || params?.callId || "";
+  const messageText = typeof params?.message === "string" ? params.message : "";
+  if (!threadId || !messageText) {
+    return;
+  }
+
+  const chat = findChatByThreadId(threadId);
+  if (!chat) {
+    return;
+  }
+
+  const messageId = `background:${turnId || "turn"}:${callId || "call"}:${hashString(messageText)}`;
+  if (!chat.messages.find((entry) => entry.id === messageId)) {
+    chat.messages.push({
+      id: messageId,
+      role: "assistant",
+      author: "Activity",
+      origin: messageOriginForChat(chat),
+      time: "running",
+      text: messageText,
+    });
+  }
+
+  persistThreadCacheForChat(chat);
+  if (selectedChat()?.id === chat.id) {
+    renderConversation();
+  }
+}
+
+function ensureCommandMessage(chat, itemId, command = "") {
+  let message = chat.messages.find((entry) => entry.id === itemId);
+  if (!message) {
+    message = {
+      id: itemId,
+      role: "assistant",
+      author: "Shell",
+      origin: messageOriginForChat(chat),
+      kind: "command",
+      command: "",
+      summary: "",
+      preview: "Running...",
+      rawOutput: "",
+      time: "running",
+      text: "",
+    };
+    chat.messages.push(message);
+  }
+
+  message.author = "Shell";
+  message.kind = "command";
+  message.origin = message.origin || messageOriginForChat(chat);
+  if (command) {
+    message.command = command;
+  }
+  message.summary = summarizeCommandForDisplay(message.command || "Command");
+  return message;
+}
+
+function normalizeLivePhase(value) {
+  const normalized = String(value || "").trim().toLowerCase();
+  if (!normalized) {
+    return "completed";
+  }
+  if (normalized === "final") {
+    return "final_answer";
+  }
+  return normalized;
+}
+
+function hashString(value) {
+  let hash = 0;
+  const input = String(value || "");
+  for (let index = 0; index < input.length; index += 1) {
+    hash = ((hash << 5) - hash) + input.charCodeAt(index);
+    hash |= 0;
+  }
+  return Math.abs(hash).toString(36);
 }
 
 function legacyApplyExecCommandBeginNotification(params) {
@@ -2053,43 +2165,120 @@ function mergeMessagesWithCache(threadId, serverMessages) {
     return cached.messages;
   }
 
-  const merged = [...serverMessages];
-  const seen = new Set(serverMessages.map(messageIdentityKey));
-  const transientMessages = cached.messages.filter(isTransientMessage);
+  const merged = cached.messages.map((message) => ({ ...message }));
+  const indexesById = new Map();
+  const indexesBySemanticKey = new Map();
 
-  for (const message of transientMessages) {
-    const key = messageIdentityKey(message);
-    if (seen.has(key)) {
+  for (let index = 0; index < merged.length; index += 1) {
+    const message = merged[index];
+    if (message?.id) {
+      indexesById.set(`id:${message.id}`, index);
+    }
+    const semanticKey = messageSemanticKey(message);
+    if (semanticKey && !indexesBySemanticKey.has(semanticKey)) {
+      indexesBySemanticKey.set(semanticKey, index);
+    }
+  }
+
+  for (const serverMessage of serverMessages) {
+    const byIdKey = serverMessage?.id ? `id:${serverMessage.id}` : "";
+    const semanticKey = messageSemanticKey(serverMessage);
+    const matchedIndex = indexesById.get(byIdKey) ?? indexesBySemanticKey.get(semanticKey);
+    if (matchedIndex == null) {
+      merged.push(serverMessage);
+      const nextIndex = merged.length - 1;
+      if (serverMessage?.id) {
+        indexesById.set(`id:${serverMessage.id}`, nextIndex);
+      }
+      if (semanticKey && !indexesBySemanticKey.has(semanticKey)) {
+        indexesBySemanticKey.set(semanticKey, nextIndex);
+      }
       continue;
     }
-    merged.push(message);
-    seen.add(key);
+
+    merged[matchedIndex] = mergeCachedMessage(merged[matchedIndex], serverMessage);
+    if (serverMessage?.id) {
+      indexesById.set(`id:${serverMessage.id}`, matchedIndex);
+    }
   }
 
   return merged;
 }
 
-function isTransientMessage(message) {
+function messageSemanticKey(message) {
   if (!message || typeof message !== "object") {
-    return false;
+    return "";
   }
-  if (message.pending) {
-    return true;
+
+  if (message.kind === "command") {
+    return [
+      "command",
+      String(message.command || "").trim(),
+      normalizeCommandOutput(message.rawOutput || ""),
+    ].join("|");
   }
-  return message.time === "pending"
-    || message.time === "thinking"
-    || message.time === "streaming";
+
+  const text = String(message.text || "").trim();
+  if (!text) {
+    return "";
+  }
+
+  return [
+    message.kind || "text",
+    message.role || "",
+    message.author || "",
+    text,
+  ].join("|");
 }
 
-function messageIdentityKey(message) {
-  if (message?.id) {
-    return `id:${message.id}`;
+function mergeCachedMessage(cachedMessage, serverMessage) {
+  const merged = {
+    ...cachedMessage,
+    ...serverMessage,
+    origin: cachedMessage.origin || serverMessage.origin,
+    text: String(serverMessage.text || "") || String(cachedMessage.text || ""),
+    time: preferredMessageTime(cachedMessage.time, serverMessage.time),
+  };
+
+  if (merged.kind === "command") {
+    merged.command = serverMessage.command || cachedMessage.command || "";
+    merged.rawOutput = serverMessage.rawOutput || cachedMessage.rawOutput || "";
+    merged.summary = serverMessage.summary || cachedMessage.summary || summarizeCommandForDisplay(merged.command || "Command");
+    merged.preview = serverMessage.preview || cachedMessage.preview || buildCommandPreview(merged.rawOutput);
   }
-  return [
-    message?.role || "",
-    message?.author || "",
-    String(message?.text || "").trim(),
-  ].join("|");
+
+  return merged;
+}
+
+function preferredMessageTime(cachedTime, serverTime) {
+  if (!serverTime) {
+    return cachedTime;
+  }
+  if (!cachedTime) {
+    return serverTime;
+  }
+  return messageTimeRank(cachedTime) > messageTimeRank(serverTime) ? cachedTime : serverTime;
+}
+
+function messageTimeRank(value) {
+  switch (value) {
+    case "final_answer":
+      return 7;
+    case "commentary":
+      return 6;
+    case "completed":
+      return 5;
+    case "running":
+      return 4;
+    case "streaming":
+      return 3;
+    case "thinking":
+      return 2;
+    case "started":
+      return 1;
+    default:
+      return 0;
+  }
 }
 
 function chatHasPendingTurn(chat) {
