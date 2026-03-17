@@ -367,10 +367,16 @@ async function importPairingFile(event) {
     return;
   }
   try {
-    applyPairing(await decodePairingPayloadFromFile(file, window), `Imported pairing from ${file.name}.`);
-    closeScanner();
+    setScannerStatus(`Reading ${file.name}...`);
+    await applyPairing(
+      await decodePairingPayloadFromFile(file, window),
+      `Imported pairing from ${file.name}.`,
+      { autoConnect: true }
+    );
+    setScannerStatus("Connected. Closing scanner...");
+    window.setTimeout(closeScanner, 480);
   } catch (error) {
-    elements.scannerStatus.textContent = error.message || "Import failed.";
+    setScannerStatus(error.message || "Import failed.");
     addLog("error", error.message || "Could not decode the selected file.", file.name);
     renderLogs();
   } finally {
@@ -413,33 +419,45 @@ function closeScanner() {
 
 async function startScanner() {
   if (!state.capabilities.secureContext) {
-    elements.scannerStatus.textContent = "Camera access requires HTTPS or localhost.";
+    setScannerStatus("Camera access requires HTTPS or localhost.");
     addLog("warn", "Scanner blocked because the page is not in a secure context.", "camera");
     renderLogs();
     return;
   }
 
-  elements.scannerStatus.textContent = "Requesting camera permission...";
+  setScannerStatus("Requesting camera permission...");
   try {
     scanner.stop();
     await scanner.start({
-      onDetect(rawValue) {
-        applyPairing(parsePairingPayload(rawValue), "Captured pairing payload from the live scanner.");
-        window.setTimeout(closeScanner, 280);
+      async onDetect(rawValue) {
+        try {
+          setScannerStatus("QR detected. Loading pairing...");
+          await applyPairing(
+            parsePairingPayload(rawValue),
+            "Captured pairing payload from the live scanner.",
+            { autoConnect: true }
+          );
+          setScannerStatus("Connected. Closing scanner...");
+          window.setTimeout(closeScanner, 480);
+        } catch (error) {
+          setScannerStatus(error.message || "Failed to connect after scanning.");
+          addLog("error", error.message || "Failed to connect after scanning.", "scanner");
+          renderLogs();
+        }
       },
       onError(error) {
-        elements.scannerStatus.textContent = error.message || "Camera scan failed.";
+        setScannerStatus(error.message || "Camera scan failed.");
         addLog("error", "Camera scan failed.", error.message || "scanner");
         renderLogs();
       },
       onStatus(statusText) {
-        elements.scannerStatus.textContent = statusText;
+        setScannerStatus(statusText);
       },
     });
     addLog("info", "Started the camera scanner.", "scanner");
     renderLogs();
   } catch (error) {
-    elements.scannerStatus.textContent = `${error.message || "Could not start the camera."} Safari can still use the camera-photo fallback.`;
+    setScannerStatus(`${error.message || "Could not start the camera."} Safari can still use the camera-photo fallback.`);
     addLog("error", "Failed to start the camera scanner.", error.message || "scanner");
     if (elements.cameraCaptureInput) {
       window.setTimeout(() => {
@@ -466,6 +484,9 @@ async function connectRelay() {
     onApplicationMessage() {},
     onConnectionState(connectionState) {
       state.connection = connectionState;
+      if (elements.scannerModal.classList.contains("is-open")) {
+        setScannerStatus(`${connectionState.label}: ${connectionState.detail}`);
+      }
       renderConnection();
     },
     onLog(level, message, meta) {
@@ -507,16 +528,25 @@ async function disconnectRelay(silent) {
   }
 }
 
-function applyPairing(payload, note) {
+async function applyPairing(payload, note, { autoConnect = false } = {}) {
   state.pairingPayload = payload;
   saveStoredPairingPayload(payload);
   if (!state.relayOverride) {
     state.relayOverride = payload.relay;
     saveStoredRelayOverride(payload.relay);
   }
-  state.connection = { detail: "Pairing loaded. You can now connect the relay socket from the sidebar footer.", label: "Pairing loaded", status: "warning" };
+  state.connection = {
+    detail: autoConnect
+      ? "Pairing loaded. Connecting the relay socket automatically."
+      : "Pairing loaded. You can now connect the relay socket from the sidebar footer.",
+    label: "Pairing loaded",
+    status: "warning",
+  };
   addLog("info", note, payload.sessionId);
   renderAll();
+  if (autoConnect) {
+    await connectRelay();
+  }
 }
 
 function updatePreference(key, value) {
@@ -773,6 +803,10 @@ function escapeHTML(value) {
     .replace(/&/g, "&amp;")
     .replace(/</g, "&lt;")
     .replace(/>/g, "&gt;");
+}
+
+function setScannerStatus(message) {
+  elements.scannerStatus.textContent = message;
 }
 
 function cloneConversations(value) {
