@@ -16,6 +16,13 @@ import {
 import { ACCESS_OPTIONS, MODEL_OPTIONS, REASONING_OPTIONS, REPOSITORY_BRANCHES, SPEED_OPTIONS } from "./modules/mock-data.mjs";
 import { loadPreferences, savePreferences } from "./modules/preferences.mjs";
 import { createScannerController } from "./modules/scanner-controller.mjs";
+import {
+  approvalPolicyForAccess,
+  buildTurnStartParams,
+  messageOriginForThread,
+  sandboxForAccess,
+  shouldForkThreadForSend,
+} from "./modules/thread-send.mjs";
 
 const state = {
   accountSummary: "Account: Unknown",
@@ -595,7 +602,7 @@ async function sendMessage() {
       chat.writable = true;
       persistThreadCacheForChat(chat);
       await refreshThreadList(chat.threadId);
-    } else if (!chat.writable) {
+    } else if (shouldForkThreadForSend(chat, state.bridgeActiveThreadId)) {
       const forkResponse = await state.client.forkThread(buildThreadForkParams(chat));
       adoptRemoteThreadForChat(chat, forkResponse.thread);
       chat.writable = true;
@@ -609,7 +616,11 @@ async function sendMessage() {
     state.connection = { detail: "Turn submitted. Waiting for turn notifications and refreshed thread state.", label: "Running turn", status: "ready" };
     renderConnection();
 
-    await state.client.startTurn(buildTurnStartParams(chat, text));
+    await state.client.startTurn(buildTurnStartParams({
+      chat,
+      text,
+      preferences: state.preferences,
+    }));
 
     await pollThreadUntilSettled(chat.threadId);
   } catch (error) {
@@ -1332,34 +1343,6 @@ function buildThreadForkParams(chat) {
     sandbox: sandboxForAccess(chat.access),
     threadId: chat.threadId,
   };
-}
-
-function buildTurnStartParams(chat, text) {
-  const input = [{ text, type: "text" }];
-  if (chat?.threadId) {
-    // Existing threads should inherit their own runtime/session settings.
-    return {
-      input,
-      threadId: chat.threadId,
-    };
-  }
-
-  return {
-    approvalPolicy: approvalPolicyForAccess(chat?.access || state.preferences.access),
-    cwd: chat?.cwd || null,
-    effort: state.preferences.reasoning || undefined,
-    input,
-    model: state.preferences.model,
-    threadId: chat?.threadId || null,
-  };
-}
-
-function approvalPolicyForAccess(access) {
-  return access === "Workspace Write" ? "never" : "on-request";
-}
-
-function sandboxForAccess(access) {
-  return access === "Read Only" ? "read-only" : "workspace-write";
 }
 
 function effortForReasoning(reasoning) {
@@ -2406,13 +2389,7 @@ function modelCatalogWithThreadRuntime(chat = selectedChat()) {
 }
 
 function messageOriginForChat(chat) {
-  if (!chat?.threadId) {
-    return "local";
-  }
-  if (chat.threadId === state.bridgeActiveThreadId) {
-    return "shared";
-  }
-  return chat.writable ? "web" : "desktop";
+  return messageOriginForThread(chat, state.bridgeActiveThreadId);
 }
 
 function describeThreadMode(chat) {
