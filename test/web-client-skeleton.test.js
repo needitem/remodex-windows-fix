@@ -460,6 +460,117 @@ test("browser bridge client keeps retrying after a previously ready session drop
   }
 });
 
+test("browser bridge client keeps retrying while waiting for the Mac bridge to rejoin", async () => {
+  const storage = createMemoryStorage();
+  const macIdentity = createOkpKeyPair("ed25519");
+  const macEphemeral = createOkpKeyPair("x25519");
+  const previousWindow = globalThis.window;
+  const previousLocalStorage = globalThis.localStorage;
+  const previousWebSocket = globalThis.WebSocket;
+  const previousSetTimeout = globalThis.setTimeout;
+  const previousClearTimeout = globalThis.clearTimeout;
+
+  const fastSetTimeout = (callback, delay = 0, ...args) => previousSetTimeout(callback, Math.min(delay, 40), ...args);
+
+  globalThis.setTimeout = fastSetTimeout;
+  globalThis.clearTimeout = previousClearTimeout;
+  globalThis.window = {
+    clearTimeout: previousClearTimeout,
+    setTimeout: fastSetTimeout,
+  };
+  globalThis.localStorage = storage;
+
+  try {
+    const {
+      buildTranscriptBytes,
+      nonceForDirection,
+    } = await import(`../web/modules/browser-secure-transport.mjs?case=waiting-mac-${Date.now()}`);
+    const { createBrowserBridgeClient } = await import(`../web/modules/browser-bridge-client.mjs?case=waiting-mac-${Date.now()}`);
+    const relayServer = createFakeBrowserRelayServer({
+      buildTranscriptBytes,
+      macEphemeral,
+      macIdentity,
+      nonceForDirection,
+      scheduleTask: previousSetTimeout,
+    });
+
+    const connectionUpdates = [];
+    let socketSequence = 0;
+
+    globalThis.WebSocket = class FakeWebSocket {
+      static CONNECTING = 0;
+      static OPEN = 1;
+      static CLOSING = 2;
+      static CLOSED = 3;
+
+      constructor(url) {
+        this.url = url;
+        this.readyState = FakeWebSocket.CONNECTING;
+        this.listeners = new Map();
+        this.sequence = ++socketSequence;
+
+        previousSetTimeout(() => {
+          this.readyState = FakeWebSocket.OPEN;
+          this.dispatch("open", {});
+        }, 0);
+      }
+
+      addEventListener(type, handler) {
+        const handlers = this.listeners.get(type) || [];
+        handlers.push(handler);
+        this.listeners.set(type, handlers);
+      }
+
+      send(message) {
+        const parsed = JSON.parse(String(message));
+        if (parsed.kind === "clientHello" && this.sequence < 3) {
+          this.close(4002, "Mac session not available");
+          return;
+        }
+        relayServer.handleOutgoing(this, String(message));
+      }
+
+      close(code = 1000, reason = "") {
+        this.readyState = FakeWebSocket.CLOSED;
+        this.dispatch("close", { code, reason });
+      }
+
+      dispatch(type, event) {
+        for (const handler of this.listeners.get(type) || []) {
+          handler(event);
+        }
+      }
+    };
+
+    const client = createBrowserBridgeClient({
+      pairingPayload: {
+        sessionId: "session-1",
+        relay: "wss://relay.example/relay",
+        macDeviceId: "mac-1",
+        macIdentityPublicKey: macIdentity.publicKey,
+      },
+      onConnectionState(update) {
+        connectionUpdates.push(update);
+      },
+    });
+
+    await client.connect();
+    const result = await client.listModels();
+
+    assert.equal(result.data[0].model, "gpt-5");
+    assert.ok(connectionUpdates.some((update) => update.label === "Waiting for Mac"));
+    assert.ok(socketSequence >= 3);
+
+    await client.disconnect();
+  } finally {
+    globalThis.window = previousWindow;
+    globalThis.localStorage = previousLocalStorage;
+    globalThis.WebSocket = previousWebSocket;
+    globalThis.setTimeout = previousSetTimeout;
+    globalThis.clearTimeout = previousClearTimeout;
+  }
+});
+
 function createMemoryStorage() {
   const map = new Map();
   return {

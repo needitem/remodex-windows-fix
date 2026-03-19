@@ -3,7 +3,6 @@ import { createBrowserSecureTransport } from "./browser-secure-transport.mjs";
 
 const REQUEST_TIMEOUT_MS = 30_000;
 const CONNECT_RETRY_DELAY_MS = 900;
-const INITIAL_CONNECT_RETRY_WINDOW_MS = 12_000;
 const UNEXPECTED_CLOSE_RETRY_DELAY_MS = 1_500;
 const CLOSE_CODE_INVALID_SESSION = 4000;
 const CLOSE_CODE_IPHONE_REPLACED = 4003;
@@ -146,18 +145,17 @@ export function createBrowserBridgeClient({
 
       const closeReason = event.reason || "Socket closed by the relay.";
       const closeCode = Number(event.code) || 0;
-      const shouldRetryInitialConnect = !initialized
+      const shouldRetryWaitingForMac = !initialized
         && !hasEstablishedSession
-        && closeReason === "Mac session not available"
-        && (Date.now() - connectStartedAt) < INITIAL_CONNECT_RETRY_WINDOW_MS;
+        && closeReason === "Mac session not available";
       const shouldRetryPersistentSession = hasEstablishedSession
         && closeCode !== CLOSE_CODE_INVALID_SESSION
         && closeCode !== CLOSE_CODE_IPHONE_REPLACED;
 
-      if (shouldRetryInitialConnect) {
+      if (shouldRetryWaitingForMac) {
         onLog("warn", "Mac session is not available yet. Retrying the relay socket.", closeReason);
         onConnectionState({
-          detail: "The QR was loaded, but the Mac bridge has not rejoined the relay yet. Retrying automatically.",
+          detail: "The pairing is still valid, but the Mac bridge is not attached right now. Retrying automatically.",
           label: "Waiting for Mac",
           status: "warning",
         });

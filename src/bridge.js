@@ -35,6 +35,8 @@ const {
 const { createBridgeSecureTransport } = require("./secure-transport");
 const { createRolloutLiveMirrorController } = require("./rollout-live-mirror");
 
+const RELAY_PING_INTERVAL_MS = 25_000;
+
 function startBridge() {
   const config = readBridgeConfig();
   registerWorkspacePath(process.cwd());
@@ -84,6 +86,7 @@ function startBridge() {
   let reconnectAttempt = 0;
   let reconnectTimer = null;
   let lastConnectionStatus = null;
+  let relayHeartbeatTimer = null;
   // A freshly connected external Codex endpoint still needs a real initialize
   // before it can serve thread/list or thread/start.
   let codexHandshakeState = "cold";
@@ -121,6 +124,15 @@ function startBridge() {
 
     clearTimeout(reconnectTimer);
     reconnectTimer = null;
+  }
+
+  function clearRelayHeartbeat() {
+    if (!relayHeartbeatTimer) {
+      return;
+    }
+
+    clearInterval(relayHeartbeatTimer);
+    relayHeartbeatTimer = null;
   }
 
   // Keeps npm start output compact by emitting only high-signal connection states.
@@ -175,9 +187,11 @@ function startBridge() {
       },
     });
     socket = nextSocket;
+    let awaitingRelayPong = false;
 
     nextSocket.on("open", () => {
       clearReconnectTimer();
+      clearRelayHeartbeat();
       reconnectAttempt = 0;
       logConnectionStatus("connected");
       secureTransport.bindLiveSendWireMessage((wireMessage) => {
@@ -185,6 +199,31 @@ function startBridge() {
           nextSocket.send(wireMessage);
         }
       });
+
+      // Keeps Cloudflare relay sockets warm and forces reconnect if the idle
+      // connection silently dies under us.
+      relayHeartbeatTimer = setInterval(() => {
+        if (nextSocket.readyState !== WebSocket.OPEN) {
+          return;
+        }
+
+        if (awaitingRelayPong) {
+          nextSocket.terminate();
+          return;
+        }
+
+        awaitingRelayPong = true;
+        try {
+          nextSocket.ping();
+        } catch {
+          nextSocket.terminate();
+        }
+      }, RELAY_PING_INTERVAL_MS);
+      relayHeartbeatTimer.unref?.();
+    });
+
+    nextSocket.on("pong", () => {
+      awaitingRelayPong = false;
     });
 
     nextSocket.on("message", (data) => {
@@ -206,6 +245,7 @@ function startBridge() {
 
     nextSocket.on("close", (code) => {
       logConnectionStatus("disconnected");
+      clearRelayHeartbeat();
       if (socket === nextSocket) {
         socket = null;
       }
@@ -242,6 +282,7 @@ function startBridge() {
     logConnectionStatus("disconnected");
     isShuttingDown = true;
     clearReconnectTimer();
+    clearRelayHeartbeat();
     stopContextUsageWatcher();
     rolloutLiveMirror.stopAll();
     desktopRefresher.handleTransportReset?.();
