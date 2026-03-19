@@ -5,9 +5,9 @@
   <meta name="viewport" content="width=device-width, initial-scale=1">
   <meta name="theme-color" content="#f5f5f7">
   <title>Remodex Web</title>
-  <link rel="manifest" href="./manifest.webmanifest?v=20260317l">
+  <link rel="manifest" href="./manifest.webmanifest?v=20260319c">
   <link rel="icon" href="./icon.svg" type="image/svg+xml">
-  <link rel="stylesheet" href="./styles.css?v=20260317l">
+  <link rel="stylesheet" href="./styles.css?v=20260319c">
 </head>
 <body>
   <a class="skip-link" href="#main-content">Skip to main content</a>
@@ -120,6 +120,7 @@
           <div class="thread-spotlight-tags">
             <span id="thread-mode-pill" class="spotlight-pill">No Thread</span>
             <span id="thread-runtime-pill" class="spotlight-pill spotlight-pill-muted">Cloud runtime</span>
+            <button id="thread-diff-button" class="spotlight-pill spotlight-pill-action" type="button">View Diff</button>
           </div>
         </div>
         <div class="thread-spotlight-grid">
@@ -128,11 +129,11 @@
             <strong id="thread-message-count">0</strong>
           </article>
           <article class="thread-spotlight-card">
-            <span>Branch</span>
+            <span>Workspace</span>
             <strong id="thread-branch-value">Unknown</strong>
           </article>
           <article class="thread-spotlight-card">
-            <span>Access</span>
+            <span>Connection</span>
             <strong id="thread-access-value">Unknown</strong>
           </article>
           <article class="thread-spotlight-card">
@@ -335,9 +336,29 @@
     </div>
   </div>
 
+  <aside class="diff-sheet" id="diff-sheet" aria-hidden="true" inert>
+    <div class="diff-panel">
+      <header class="diff-header">
+        <div>
+          <p class="eyebrow eyebrow-muted">Workspace Diff</p>
+          <h2 id="diff-title">Current changes</h2>
+          <p id="diff-meta" class="diff-meta">Select a thread with a local workspace to load its current patch.</p>
+        </div>
+        <div class="diff-header-actions">
+          <button id="refresh-diff-button" class="mini-button" type="button">Refresh</button>
+          <button id="close-diff-button" class="icon-button" type="button" aria-label="Close diff">
+            <span></span>
+            <span></span>
+          </button>
+        </div>
+      </header>
+      <section id="diff-body" class="diff-body" aria-live="polite"></section>
+    </div>
+  </aside>
+
   <input id="pairing-file-input" type="file" accept=".json,application/json,image/*" hidden>
   <input id="camera-capture-input" type="file" accept="image/*" capture="environment" hidden>
-  <script src="./vendor/jsqr.js?v=20260318a"></script>
-  <script type="module" src="./bootstrap.mjs?v=20260318a"></script>
+  <script src="./vendor/jsqr.js?v=20260319c"></script>
+  <script type="module" src="./bootstrap.mjs?v=20260319c"></script>
 </body>
 </html>

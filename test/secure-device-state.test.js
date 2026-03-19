@@ -81,6 +81,40 @@ test("rememberTrustedPhone preserves previously trusted devices when adding a br
   });
 });
 
+test("loadOrCreateBridgeDeviceState heals an unreadable canonical state file automatically", async () => {
+  const tempDir = fs.mkdtempSync(path.join(os.tmpdir(), "remodex-device-state-corrupt-"));
+  const stateFile = path.join(tempDir, "device-state.json");
+  const keychainMockFile = path.join(tempDir, "keychain.json");
+
+  const previousEnv = {
+    REMODEX_DEVICE_STATE_DIR: process.env.REMODEX_DEVICE_STATE_DIR,
+    REMODEX_DEVICE_STATE_FILE: process.env.REMODEX_DEVICE_STATE_FILE,
+    REMODEX_DEVICE_STATE_KEYCHAIN_MOCK_FILE: process.env.REMODEX_DEVICE_STATE_KEYCHAIN_MOCK_FILE,
+  };
+
+  process.env.REMODEX_DEVICE_STATE_DIR = tempDir;
+  process.env.REMODEX_DEVICE_STATE_FILE = stateFile;
+  process.env.REMODEX_DEVICE_STATE_KEYCHAIN_MOCK_FILE = keychainMockFile;
+  fs.writeFileSync(stateFile, "{ definitely-not-json", "utf8");
+
+  try {
+    delete require.cache[require.resolve("../src/secure-device-state")];
+    const { loadOrCreateBridgeDeviceState } = require("../src/secure-device-state");
+    const repairedState = loadOrCreateBridgeDeviceState();
+
+    assert.match(repairedState.macDeviceId, /^[0-9a-f-]{36}$/i);
+    assert.match(repairedState.relaySessionId, /^[0-9a-f-]{36}$/i);
+
+    const persisted = JSON.parse(fs.readFileSync(stateFile, "utf8"));
+    assert.equal(persisted.macDeviceId, repairedState.macDeviceId);
+    assert.equal(persisted.relaySessionId, repairedState.relaySessionId);
+  } finally {
+    restoreEnv(previousEnv);
+    fs.rmSync(tempDir, { recursive: true, force: true });
+    delete require.cache[require.resolve("../src/secure-device-state")];
+  }
+});
+
 function restoreEnv(previousEnv) {
   for (const [key, value] of Object.entries(previousEnv)) {
     if (value == null) {

@@ -15,6 +15,7 @@ const {
   contextUsageFromTokenCountPayload,
   createThreadRolloutActivityWatcher,
   readLatestContextWindowUsage,
+  readLatestThreadPatch,
 } = require("../src/rollout-watch");
 
 test("contextUsageFromTokenCountPayload prefers last_token_usage totals", () => {
@@ -121,6 +122,70 @@ test("readLatestContextWindowUsage returns null when no rollout matches the requ
   assert.equal(result, null);
 });
 
+test("readLatestContextWindowUsage prefers the newest matching rollout when multiple files share a thread id", (t) => {
+  const { homeDir, threadDir } = makeTemporarySessionsHome();
+  const previousCodexHome = process.env.CODEX_HOME;
+  process.env.CODEX_HOME = homeDir;
+  t.after(() => {
+    restoreCodexHome(previousCodexHome);
+    fs.rmSync(homeDir, { recursive: true, force: true });
+  });
+
+  const olderFile = path.join(threadDir, "rollout-2026-03-05T13-23-27-thread-a.jsonl");
+  const newerFile = path.join(threadDir, "rollout-2026-03-05T13-29-27-thread-a.jsonl");
+
+  writeRolloutFile(olderFile, {
+    turnId: "turn-a-1",
+    tokensUsed: 111,
+    tokenLimit: 1_000,
+  });
+  writeRolloutFile(newerFile, {
+    turnId: "turn-a-2",
+    tokensUsed: 333,
+    tokenLimit: 1_000,
+  });
+
+  fs.utimesSync(olderFile, new Date("2026-03-05T13:23:27Z"), new Date("2026-03-05T13:23:27Z"));
+  fs.utimesSync(newerFile, new Date("2026-03-05T13:29:27Z"), new Date("2026-03-05T13:29:27Z"));
+
+  const result = readLatestContextWindowUsage({ threadId: "thread-a" });
+  assert.deepEqual(result?.usage, {
+    tokensUsed: 333,
+    tokenLimit: 1_000,
+  });
+  assert.match(result?.rolloutPath ?? "", /13-29-27-thread-a\.jsonl$/);
+});
+
+test("readLatestThreadPatch returns the newest apply_patch payload for the requested thread", (t) => {
+  const { homeDir, threadDir } = makeTemporarySessionsHome();
+  const previousCodexHome = process.env.CODEX_HOME;
+  process.env.CODEX_HOME = homeDir;
+  t.after(() => {
+    restoreCodexHome(previousCodexHome);
+    fs.rmSync(homeDir, { recursive: true, force: true });
+  });
+
+  const olderFile = path.join(threadDir, "rollout-2026-03-05T13-23-27-thread-a.jsonl");
+  const newerFile = path.join(threadDir, "rollout-2026-03-05T13-29-27-thread-a.jsonl");
+
+  writePatchRolloutFile(olderFile, {
+    patch: "*** Begin Patch\n*** Add File: old.txt\n+old\n*** End Patch\n",
+    turnId: "turn-a-1",
+  });
+  writePatchRolloutFile(newerFile, {
+    patch: "*** Begin Patch\n*** Add File: new.txt\n+new\n*** End Patch\n",
+    turnId: "turn-a-2",
+  });
+
+  fs.utimesSync(olderFile, new Date("2026-03-05T13:23:27Z"), new Date("2026-03-05T13:23:27Z"));
+  fs.utimesSync(newerFile, new Date("2026-03-05T13:29:27Z"), new Date("2026-03-05T13:29:27Z"));
+
+  const result = readLatestThreadPatch({ threadId: "thread-a" });
+  assert.equal(result?.turnId, "turn-a-2");
+  assert.match(result?.patch ?? "", /\*\*\* Add File: new\.txt/);
+  assert.match(result?.rolloutPath ?? "", /13-29-27-thread-a\.jsonl$/);
+});
+
 function makeTemporarySessionsHome() {
   const homeDir = fs.mkdtempSync(path.join(os.tmpdir(), "rollout-watch-"));
   const threadDir = path.join(homeDir, "sessions", "2026", "03", "12");
@@ -150,6 +215,29 @@ function writeRolloutFile(filePath, { turnId, tokensUsed, tokenLimit }) {
           },
           model_context_window: tokenLimit,
         },
+      },
+    }),
+    "",
+  ];
+  fs.writeFileSync(filePath, lines.join("\n"));
+}
+
+function writePatchRolloutFile(filePath, { turnId, patch }) {
+  const lines = [
+    JSON.stringify({
+      timestamp: "2026-03-05T13:23:27.971Z",
+      type: "turn_context",
+      payload: {
+        turn_id: turnId,
+      },
+    }),
+    JSON.stringify({
+      timestamp: "2026-03-05T13:23:29.357Z",
+      type: "response_item",
+      payload: {
+        type: "custom_tool_call",
+        name: "apply_patch",
+        input: patch,
       },
     }),
     "",

@@ -73,7 +73,7 @@ export const DEFAULT_CONVERSATIONS = [
             role: "user",
             author: "You",
             time: "now",
-            text: "Mirror the app UI with QR scan, foldered chat list, settings, model choice, and repo controls.",
+            text: "Match the app UI with QR scan, foldered chat list, settings, model choice, and repo controls.",
           },
           {
             role: "assistant",

@@ -59,6 +59,15 @@ const state = {
   client: null,
   connection: { detail: "Load a QR or pairing JSON to connect the browser client.", label: "Waiting for pairing", status: "warning" },
   conversations: [],
+  diffViewer: {
+    callId: "",
+    error: "",
+    loadedAt: 0,
+    patch: "",
+    sourceThreadId: "",
+    status: "idle",
+    turnId: "",
+  },
   logs: [],
   modelCatalog: MODEL_OPTIONS.map((value) => ({
     defaultReasoningEffort: "medium",
@@ -83,6 +92,7 @@ const state = {
 const elements = mapElements();
 const scanner = createScannerController({ videoElement: elements.scannerVideo });
 let refreshTimer = 0;
+const patchRefreshTimers = new Map();
 
 void init();
 
@@ -109,6 +119,7 @@ function mapElements() {
     branchSelect: document.querySelector("#branch-select"),
     cameraCaptureInput: document.querySelector("#camera-capture-input"),
     clearPairingButton: document.querySelector("#clear-pairing-button"),
+    closeDiffButton: document.querySelector("#close-diff-button"),
     closeScannerButton: document.querySelector("#close-scanner-button"),
     closeSettingsButton: document.querySelector("#close-settings-button"),
     composerInput: document.querySelector("#composer-input"),
@@ -119,6 +130,10 @@ function mapElements() {
     connectionMeta: document.querySelector("#connection-meta"),
     createBranchButton: document.querySelector("#create-branch-button"),
     disconnectButton: document.querySelector("#disconnect-button"),
+    diffBody: document.querySelector("#diff-body"),
+    diffMeta: document.querySelector("#diff-meta"),
+    diffSheet: document.querySelector("#diff-sheet"),
+    diffTitle: document.querySelector("#diff-title"),
     folderList: document.querySelector("#folder-list"),
     fontSelect: document.querySelector("#font-select"),
     glassToggle: document.querySelector("#glass-toggle"),
@@ -138,6 +153,7 @@ function mapElements() {
     accountChip: document.querySelector("#account-chip"),
     pushStatusLabel: document.querySelector("#push-status-label"),
     rateLimitChip: document.querySelector("#rate-limit-chip"),
+    refreshDiffButton: document.querySelector("#refresh-diff-button"),
     reasoningSelect: document.querySelector("#reasoning-select"),
     relayUrlInput: document.querySelector("#relay-url-input"),
     repoLocationChip: document.querySelector("#repo-location-chip"),
@@ -164,6 +180,7 @@ function mapElements() {
     threadAccessValue: document.querySelector("#thread-access-value"),
     threadBranchValue: document.querySelector("#thread-branch-value"),
     threadCount: document.querySelector("#thread-count"),
+    threadDiffButton: document.querySelector("#thread-diff-button"),
     threadMessageCount: document.querySelector("#thread-message-count"),
     threadModePill: document.querySelector("#thread-mode-pill"),
     threadRepoLabel: document.querySelector("#thread-repo-label"),
@@ -184,6 +201,9 @@ function wireEvents() {
   elements.newChatButton.addEventListener("click", () => { void createChat(); });
   elements.createBranchButton.addEventListener("click", createBranch);
   elements.sendButton.addEventListener("click", sendMessage);
+  elements.threadDiffButton.addEventListener("click", () => { void openDiff(); });
+  elements.refreshDiffButton.addEventListener("click", () => { void refreshDiffForSelectedChat(); });
+  elements.closeDiffButton.addEventListener("click", closeDiff);
   elements.composerInput.addEventListener("keydown", (event) => { if ((event.metaKey || event.ctrlKey) && event.key === "Enter") { event.preventDefault(); void sendMessage(); } });
   elements.repoSelect.addEventListener("change", (event) => mutateSelectedChat(async (chat) => {
     const nextRepo = event.target.value;
@@ -218,6 +238,7 @@ function wireEvents() {
   elements.headerScanButton.addEventListener("click", openScanner);
   elements.closeScannerButton.addEventListener("click", closeScanner);
   elements.scannerModal.addEventListener("click", (event) => { if (event.target === elements.scannerModal) { closeScanner(); } });
+  elements.diffSheet.addEventListener("click", (event) => { if (event.target === elements.diffSheet) { closeDiff(); } });
   elements.scannerStartButton.addEventListener("click", startScanner);
   elements.scannerImportButton.addEventListener("click", () => elements.pairingFileInput.click());
   elements.cameraCaptureInput.addEventListener("change", importPairingFile);
@@ -244,6 +265,7 @@ function renderAll() {
   renderConnection();
   renderRuntimeStrip();
   renderSettings();
+  renderDiffViewer();
   renderLogs();
 }
 
@@ -308,11 +330,9 @@ function renderSidebar() {
           <span class="chat-item-snippet">${escapeHTML(chat.snippet)}</span>
           <span class="chat-item-dot${isPending ? " chat-item-dot-live" : ""}"${isActive || isPending ? "" : " hidden"}></span>
         </div>
-        <div class="chat-item-tags">
-          <span class="chat-item-tag">${escapeHTML(chat.branch || "main")}</span>
-          <span class="chat-item-tag">${escapeHTML(sidebarModeLabel(chat))}</span>
-          ${isPending ? '<span class="chat-item-tag chat-item-tag-live">Running</span>' : ""}
-        </div>
+        ${isPending
+          ? '<div class="chat-item-tags"><span class="chat-item-tag chat-item-tag-live">Running</span></div>'
+          : ""}
       `;
       button.addEventListener("click", () => {
         state.selectedChatId = chat.id;
@@ -369,7 +389,7 @@ function renderConversation() {
   }
   elements.threadRepoLabel.textContent = chat.repo;
   elements.threadTitle.textContent = chat.title;
-  elements.threadSubtitle.textContent = `${describeThreadMode(chat)} | Branch ${chat.branch} | ${chat.access} | ${state.connection.label}`;
+  elements.threadSubtitle.textContent = compactThreadSubtitle(chat);
   renderThreadModeChip(chat);
   renderThreadSpotlight(chat);
   const branchOptions = state.branchCatalog.length ? state.branchCatalog : (REPOSITORY_BRANCHES[chat.repo] || [chat.branch || "main"]);
@@ -424,6 +444,7 @@ function renderConnection() {
   }
   renderDeckSummary();
   renderThreadSpotlight(selectedChat());
+  renderDiffViewer();
 }
 
 function renderRuntimeStrip() {
@@ -462,8 +483,8 @@ function renderThreadSpotlight(chat) {
     elements.threadModePill.textContent = "No Thread";
     elements.threadRuntimePill.textContent = "Cloud runtime";
     elements.threadMessageCount.textContent = "0";
-    elements.threadBranchValue.textContent = "Unknown";
-    elements.threadAccessValue.textContent = "Unknown";
+    elements.threadBranchValue.textContent = "Unavailable";
+    elements.threadAccessValue.textContent = "Waiting";
     elements.threadSyncValue.textContent = "Waiting";
     return;
   }
@@ -478,8 +499,8 @@ function renderThreadSpotlight(chat) {
   elements.threadModePill.textContent = threadModeChipLabel(messageOriginForChat(chat));
   elements.threadRuntimePill.textContent = chat.cwd ? "Local workspace" : "Cloud runtime";
   elements.threadMessageCount.textContent = String(chat.messages?.length || 0);
-  elements.threadBranchValue.textContent = chat.branch || "Unknown";
-  elements.threadAccessValue.textContent = chat.access || "Unknown";
+  elements.threadBranchValue.textContent = workspaceSummaryLabel(chat);
+  elements.threadAccessValue.textContent = state.connection.label || "Waiting";
   elements.threadSyncValue.textContent = chatHasPendingTurn(chat) ? "Running turn" : (chat.timestamp || state.connection.label);
 }
 
@@ -504,6 +525,71 @@ function renderSettings() {
   elements.glassToggle.checked = state.preferences.glass;
   const pushCapability = state.capabilities.items.find((item) => item.label === "Web Push");
   elements.pushStatusLabel.textContent = pushCapability && pushCapability.detail.includes("exist") ? "Supported" : "Unavailable";
+}
+
+function renderDiffViewer() {
+  const chat = selectedChat();
+  const canView = canViewDiffForChat(chat);
+  const isCurrentThread = Boolean(chat?.threadId && state.diffViewer.sourceThreadId === chat.threadId);
+
+  elements.threadDiffButton.disabled = !canView;
+  elements.threadDiffButton.textContent = state.diffViewer.status === "loading" && isCurrentThread
+    ? "Loading..."
+    : "View Diff";
+
+  elements.refreshDiffButton.disabled = !canView || (state.diffViewer.status === "loading" && isCurrentThread);
+  elements.diffTitle.textContent = chat?.repo ? `${chat.repo} changes` : "Current changes";
+
+  if (!chat) {
+    elements.diffMeta.textContent = "Select a thread to load the latest Codex patch captured for it.";
+    renderDiffBodyEmpty("Choose a chat first.");
+    return;
+  }
+
+  if (!chat.threadId) {
+    elements.diffMeta.textContent = "This local draft does not have a remote thread yet.";
+    renderDiffBodyEmpty("Send the first prompt so the draft becomes a real thread, then the latest patch can show here.");
+    return;
+  }
+
+  if (!state.client || state.connection.status !== "ready") {
+    elements.diffMeta.textContent = `${truncate(chat.threadId, 40)} | Connect the bridge to read the latest captured patch.`;
+    renderDiffBodyEmpty("Reconnect the bridge, then refresh to load the latest Codex patch for this thread.");
+    return;
+  }
+
+  if (state.diffViewer.status === "loading" && isCurrentThread) {
+    elements.diffMeta.textContent = `${truncate(chat.threadId, 40)} | Loading latest patch...`;
+    renderDiffBodyEmpty("Loading the latest Codex patch for this thread...");
+    return;
+  }
+
+  if (state.diffViewer.status === "error" && isCurrentThread) {
+    elements.diffMeta.textContent = `${truncate(chat.threadId, 40)} | Could not load the patch.`;
+    renderDiffBodyEmpty(state.diffViewer.error || "Could not load the latest Codex patch.");
+    return;
+  }
+
+  if (state.diffViewer.status === "empty" && isCurrentThread) {
+    elements.diffMeta.textContent = `${truncate(chat.threadId, 40)} | No captured patch yet.`;
+    renderDiffBodyEmpty("No exact Codex patch has been captured for this thread yet.");
+    return;
+  }
+
+  if (state.diffViewer.status === "ready" && isCurrentThread) {
+    elements.diffMeta.textContent = buildDiffMeta({
+      callId: state.diffViewer.callId,
+      patch: state.diffViewer.patch,
+      threadId: chat.threadId,
+      turnId: state.diffViewer.turnId,
+      loadedAt: state.diffViewer.loadedAt,
+    });
+    renderUnifiedDiff(elements.diffBody, state.diffViewer.patch);
+    return;
+  }
+
+  elements.diffMeta.textContent = `${truncate(chat.threadId, 40)} | Tap refresh to load the latest patch.`;
+  renderDiffBodyEmpty("No Codex patch has been loaded for this thread yet.");
 }
 
 function renderLogs() {
@@ -719,6 +805,136 @@ function openScanner() {
 function closeScanner() {
   scanner.stop();
   closeModal(elements.scannerModal);
+}
+
+async function openDiff() {
+  const chat = selectedChat();
+  if (!canViewDiffForChat(chat)) {
+    return;
+  }
+
+  openModal(elements.diffSheet);
+  renderDiffViewer();
+
+  if (state.diffViewer.sourceThreadId !== chat.threadId || state.diffViewer.status === "idle" || state.diffViewer.status === "error") {
+    await refreshDiffForSelectedChat();
+  }
+}
+
+function closeDiff() {
+  closeModal(elements.diffSheet);
+}
+
+async function refreshDiffForSelectedChat() {
+  const chat = selectedChat();
+  if (!canViewDiffForChat(chat)) {
+    renderDiffViewer();
+    return;
+  }
+
+  state.diffViewer = {
+    callId: "",
+    error: "",
+    loadedAt: state.diffViewer.loadedAt,
+    patch: "",
+    sourceThreadId: chat.threadId,
+    status: "loading",
+    turnId: "",
+  };
+  renderDiffViewer();
+
+  try {
+    const result = await state.client.readThreadPatch(chat.threadId);
+    const patch = typeof result?.patch === "string" ? result.patch : "";
+    state.diffViewer = {
+      callId: result?.callId || "",
+      error: "",
+      loadedAt: result?.timestamp ? Date.parse(result.timestamp) || Date.now() : Date.now(),
+      patch,
+      sourceThreadId: chat.threadId,
+      status: patch ? "ready" : "empty",
+      turnId: result?.turnId || "",
+    };
+    renderDiffViewer();
+  } catch (error) {
+    state.diffViewer = {
+      callId: "",
+      error: error.message || "Could not load the latest Codex patch.",
+      loadedAt: 0,
+      patch: "",
+      sourceThreadId: chat.threadId,
+      status: "error",
+      turnId: "",
+    };
+    addLog("error", state.diffViewer.error, "thread/patch/read");
+    renderDiffViewer();
+    renderLogs();
+  }
+}
+
+async function syncLatestPatchForChat(chat) {
+  if (!state.client || state.connection.status !== "ready" || !chat?.threadId) {
+    return;
+  }
+
+  try {
+    const result = await state.client.readThreadPatch(chat.threadId);
+    const patch = typeof result?.patch === "string" ? result.patch : "";
+    if (!patch) {
+      return;
+    }
+
+    const messageId = `patch:${result?.callId || result?.turnId || hashString(patch)}`;
+    const timestamp = result?.timestamp
+      ? new Date(result.timestamp).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" })
+      : "changed";
+
+    let message = chat.messages.find((entry) => entry.id === messageId);
+    if (!message) {
+      message = {
+        id: messageId,
+        role: "assistant",
+        author: "Changed files",
+        kind: "patch",
+        origin: messageOriginForChat(chat),
+        patch,
+        preview: buildPatchPreview(patch),
+        summary: summarizePatchForDisplay(patch),
+        time: timestamp,
+        text: "",
+      };
+      chat.messages.push(message);
+    } else {
+      message.author = "Changed files";
+      message.kind = "patch";
+      message.origin = message.origin || messageOriginForChat(chat);
+      message.patch = patch;
+      message.preview = buildPatchPreview(patch);
+      message.summary = summarizePatchForDisplay(patch);
+      message.time = timestamp;
+    }
+
+    if (state.diffViewer.sourceThreadId === chat.threadId || elements.diffSheet.classList.contains("is-open")) {
+      state.diffViewer = {
+        callId: result?.callId || "",
+        error: "",
+        loadedAt: result?.timestamp ? Date.parse(result.timestamp) || Date.now() : Date.now(),
+        patch,
+        sourceThreadId: chat.threadId,
+        status: "ready",
+        turnId: result?.turnId || "",
+      };
+    }
+
+    persistThreadCacheForChat(chat);
+    if (selectedChat()?.id === chat.id) {
+      renderConversation();
+      renderDiffViewer();
+    }
+  } catch (error) {
+    addLog("warn", error.message || "Could not read the latest Codex patch.", "thread/patch/read");
+    renderLogs();
+  }
 }
 
 async function startScanner() {
@@ -1115,6 +1331,7 @@ function handleNotification(notification) {
       if (chat) {
         chat.messages = chat.messages.filter((message) => !message.pending);
         persistThreadCacheForChat(chat);
+        schedulePatchCapture(threadId);
       }
     }
   }
@@ -1142,6 +1359,13 @@ function handleNotification(notification) {
 
   if (method === "turn/completed" || method.startsWith("thread/")) {
     const threadId = notification.params?.threadId || notification.params?.thread?.id || notification.params?.thread?.threadId;
+    if (
+      threadId
+      && selectedChat()?.threadId === threadId
+      && elements.diffSheet.classList.contains("is-open")
+    ) {
+      void refreshDiffForSelectedChat();
+    }
     scheduleRefresh(threadId || selectedChat()?.threadId || null);
   }
 }
@@ -1155,6 +1379,28 @@ function scheduleRefresh(threadId) {
     }
     void refreshThreadList();
   }, 400);
+}
+
+function schedulePatchCapture(threadId) {
+  if (!threadId) {
+    return;
+  }
+
+  const existingTimer = patchRefreshTimers.get(threadId);
+  if (existingTimer) {
+    window.clearTimeout(existingTimer);
+  }
+
+  const timerId = window.setTimeout(() => {
+    patchRefreshTimers.delete(threadId);
+    const chat = findChatByThreadId(threadId);
+    if (!chat) {
+      return;
+    }
+    void syncLatestPatchForChat(chat);
+  }, 550);
+
+  patchRefreshTimers.set(threadId, timerId);
 }
 
 async function refreshRuntimeSummaries() {
@@ -2087,11 +2333,11 @@ function describeThreadMode(chat) {
     return "Local draft";
   }
   if (chat.threadId === state.bridgeActiveThreadId) {
-    return "Shared session view";
+    return "Shared thread";
   }
   return chat.writable
-    ? "Isolated web thread"
-    : "Desktop mirror view";
+    ? "Web thread"
+    : "Desktop thread";
 }
 
 function renderThreadModeChip(chat) {
@@ -2108,13 +2354,13 @@ function renderThreadModeChip(chat) {
 function threadModeChipLabel(origin) {
   switch (origin) {
     case "web":
-      return "Web Isolated";
+      return "Web";
     case "shared":
-      return "Shared View";
+      return "Shared";
     case "desktop":
-      return "Desktop View";
+      return "Desktop";
     case "local":
-      return "Local Draft";
+      return "Draft";
     default:
       return "No Thread";
   }
@@ -2127,7 +2373,7 @@ function sidebarModeLabel(chat) {
     case "shared":
       return "Shared";
     case "desktop":
-      return "Mirror";
+      return "Desktop";
     case "local":
       return "Draft";
     default:
@@ -2157,12 +2403,33 @@ function originBadgeLabel(origin) {
     case "shared":
       return "Shared Session";
     case "desktop":
-      return "Desktop Mirror";
+      return "Desktop";
     case "local":
       return "Local Draft";
     default:
       return "Unknown";
   }
+}
+
+function compactThreadSubtitle(chat) {
+  if (chat.cwd) {
+    return `${truncate(chat.cwd, 72)} | ${chat.access || "Unknown"} | ${state.connection.label}`;
+  }
+  if (chat.originUrl) {
+    return `${truncate(chat.originUrl, 72)} | ${state.connection.label}`;
+  }
+  return `${chat.access || "Unknown"} | ${state.connection.label}`;
+}
+
+function workspaceSummaryLabel(chat) {
+  if (chat.cwd) {
+    const segments = String(chat.cwd).split(/[\\/]/).filter(Boolean);
+    return truncate(segments.at(-1) || chat.cwd, 28);
+  }
+  if (chat.repo) {
+    return truncate(chat.repo, 28);
+  }
+  return "Browser shell";
 }
 
 function originBadgeClass(origin) {
@@ -2234,12 +2501,192 @@ function renderMessageBubble(element, message) {
     return;
   }
 
+  if (message?.kind === "patch") {
+    const summaryText = message.summary || summarizePatchForDisplay(message.patch || "");
+    const previewText = message.preview || buildPatchPreview(message.patch || "");
+    if (!summaryText && !previewText) {
+      element.replaceChildren();
+      return;
+    }
+
+    element.classList.add("patch-bubble");
+
+    const summary = document.createElement("div");
+    summary.className = "patch-summary";
+    summary.textContent = summaryText;
+
+    const preview = document.createElement("pre");
+    preview.className = "patch-preview";
+    preview.textContent = previewText;
+
+    element.replaceChildren(summary, preview);
+
+    if (message.patch) {
+      const details = document.createElement("details");
+      details.className = "patch-details";
+      details.open = true;
+      const summaryLine = document.createElement("summary");
+      summaryLine.textContent = "Show Exact Diff";
+      const diffShell = buildUnifiedDiffElement(message.patch);
+      details.append(summaryLine, diffShell);
+      element.append(details);
+    }
+    return;
+  }
+
   element.textContent = message?.text || "";
 }
 
 function addLog(level, message, meta = new Date().toLocaleTimeString()) {
   state.logs.unshift({ level, message, meta });
   state.logs = state.logs.slice(0, 8);
+}
+
+function canViewDiffForChat(chat) {
+  return Boolean(chat?.threadId && state.client && state.connection.status === "ready");
+}
+
+function renderDiffBodyEmpty(message) {
+  elements.diffBody.replaceChildren(createEmptyDiffState(message));
+}
+
+function createEmptyDiffState(message) {
+  const panel = document.createElement("section");
+  panel.className = "empty-panel empty-panel-diff";
+  panel.innerHTML = `
+    <p class="empty-kicker">Diff</p>
+    <h3>${escapeHTML(message)}</h3>
+    <p>When Codex captures an apply_patch edit for this thread, the exact patch will show up here.</p>
+  `;
+  return panel;
+}
+
+function renderUnifiedDiff(container, patch) {
+  if (!patch.trim()) {
+    renderDiffBodyEmpty("No exact Codex patch has been captured for this thread yet.");
+    return;
+  }
+
+  container.replaceChildren(buildUnifiedDiffElement(patch));
+}
+
+function buildUnifiedDiffElement(patch) {
+  const normalizedPatch = String(patch || "");
+  const fragment = document.createDocumentFragment();
+  const lines = normalizedPatch.replace(/\r/g, "").split("\n");
+
+  for (const line of lines) {
+    const row = document.createElement("div");
+    row.className = `diff-line ${diffLineClass(line)}`.trim();
+    row.textContent = line || " ";
+    fragment.append(row);
+  }
+
+  const shell = document.createElement("div");
+  shell.className = "diff-lines";
+  shell.append(fragment);
+  return shell;
+}
+
+function diffLineClass(line) {
+  if (
+    line.startsWith("diff --git ")
+    || line.startsWith("@@")
+    || line.startsWith("index ")
+    || line.startsWith("--- ")
+    || line.startsWith("+++ ")
+  ) {
+    return "diff-line-meta";
+  }
+  if (line.startsWith("+")) {
+    return "diff-line-add";
+  }
+  if (line.startsWith("-")) {
+    return "diff-line-remove";
+  }
+  return "diff-line-context";
+}
+
+function buildDiffMeta({ threadId, turnId, callId, patch, loadedAt }) {
+  const summary = summarizeDiffPatch(patch);
+  const pieces = [truncate(threadId, 40)];
+  if (turnId) {
+    pieces.push(`turn ${truncate(turnId, 16)}`);
+  }
+  if (callId) {
+    pieces.push(`patch ${truncate(callId, 14)}`);
+  }
+  if (summary.files > 0) {
+    pieces.push(`${summary.files} file${summary.files === 1 ? "" : "s"}`);
+  }
+  if (summary.additions > 0 || summary.deletions > 0) {
+    pieces.push(`+${summary.additions} -${summary.deletions}`);
+  }
+  if (loadedAt) {
+    pieces.push(new Date(loadedAt).toLocaleTimeString());
+  }
+  return pieces.join(" | ");
+}
+
+function summarizeDiffPatch(patch) {
+  const lines = String(patch || "").replace(/\r/g, "").split("\n");
+  let files = 0;
+  let additions = 0;
+  let deletions = 0;
+
+  for (const line of lines) {
+    if (line.startsWith("diff --git ")) {
+      files += 1;
+      continue;
+    }
+    if (line.startsWith("+++ ") || line.startsWith("--- ")) {
+      continue;
+    }
+    if (line.startsWith("+")) {
+      additions += 1;
+      continue;
+    }
+    if (line.startsWith("-")) {
+      deletions += 1;
+    }
+  }
+
+  return { additions, deletions, files };
+}
+
+function summarizePatchForDisplay(patch) {
+  const summary = summarizeDiffPatch(patch);
+  const parts = [];
+  if (summary.files > 0) {
+    parts.push(`Changed ${summary.files} file${summary.files === 1 ? "" : "s"}`);
+  } else {
+    parts.push("Changed files");
+  }
+  if (summary.additions > 0 || summary.deletions > 0) {
+    parts.push(`+${summary.additions} -${summary.deletions}`);
+  }
+  return parts.join(" | ");
+}
+
+function buildPatchPreview(patch) {
+  const files = [];
+  for (const line of String(patch || "").replace(/\r/g, "").split("\n")) {
+    if (!line.startsWith("diff --git ")) {
+      continue;
+    }
+    const parts = line.trim().split(/\s+/);
+    const rawPath = parts[3] || parts[2] || "";
+    const normalized = rawPath.replace(/^[ab]\//, "");
+    if (normalized && !files.includes(normalized)) {
+      files.push(normalized);
+    }
+  }
+
+  if (files.length) {
+    return files.slice(0, 6).map((filePath) => `- ${filePath}`).join("\n");
+  }
+
+  return "Exact patch captured.";
 }
 
 function openModal(element) {

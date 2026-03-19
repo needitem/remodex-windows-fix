@@ -68,6 +68,10 @@ export function createBrowserBridgeClient({
       await readyPromise;
       return request("thread/runtime/read", { threadId });
     },
+    async readThreadPatch(threadId, turnId = null) {
+      await readyPromise;
+      return request("thread/patch/read", turnId ? { threadId, turnId } : { threadId });
+    },
     async readActiveThread() {
       await readyPromise;
       return request("thread/active/read", {});

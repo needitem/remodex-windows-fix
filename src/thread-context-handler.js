@@ -8,6 +8,7 @@ const fs = require("fs");
 const {
   findRecentRolloutFileForContextRead,
   readLatestContextWindowUsage,
+  readLatestThreadPatch,
   resolveSessionsRoot,
 } = require("./rollout-watch");
 const { readLastActiveThread } = require("./session-state");
@@ -25,6 +26,7 @@ function handleThreadContextRequest(rawMessage, sendResponse) {
     method !== "thread/contextWindow/read"
     && method !== "thread/active/read"
     && method !== "thread/runtime/read"
+    && method !== "thread/patch/read"
   ) {
     return false;
   }
@@ -36,7 +38,9 @@ function handleThreadContextRequest(rawMessage, sendResponse) {
     ? handleActiveThreadRead
     : method === "thread/runtime/read"
       ? () => handleThreadRuntimeRead(params)
-    : () => handleThreadContextRead(params);
+      : method === "thread/patch/read"
+        ? () => handleThreadPatchRead(params)
+      : () => handleThreadContextRead(params);
 
   handler()
     .then((result) => {
@@ -104,6 +108,29 @@ async function handleThreadRuntimeRead(params) {
     threadId,
     rolloutPath: rolloutPath || null,
     runtime: rolloutPath ? readLatestThreadRuntimeFromRollout(rolloutPath, turnId) : null,
+  };
+}
+
+async function handleThreadPatchRead(params) {
+  const threadId = readString(params.threadId) || readString(params.thread_id);
+  if (!threadId) {
+    throw threadContextError("missing_thread_id", "thread/patch/read requires a threadId.");
+  }
+
+  const turnId = readString(params.turnId) || readString(params.turn_id);
+  const result = readLatestThreadPatch({
+    threadId,
+    turnId,
+    fsModule: fs,
+  });
+
+  return {
+    threadId,
+    turnId: result?.turnId ?? null,
+    callId: result?.callId ?? null,
+    patch: result?.patch ?? null,
+    rolloutPath: result?.rolloutPath ?? null,
+    timestamp: result?.timestamp ?? null,
   };
 }
 

@@ -325,7 +325,9 @@ function findRecentRolloutFileForWatch(
   }
 
   if (threadId) {
-    const threadScopedRollout = findRolloutFileForThread(root, threadId, { fsModule });
+    const threadScopedRollout = findPreferredRolloutFileForThread(root, candidates, threadId, {
+      fsModule,
+    });
     if (threadScopedRollout) {
       return threadScopedRollout;
     }
@@ -369,7 +371,9 @@ function findRecentRolloutFileForContextRead(
   }
 
   if (threadId) {
-    const threadScopedRollout = findRolloutFileForThread(root, threadId, { fsModule });
+    const threadScopedRollout = findPreferredRolloutFileForThread(root, candidates, threadId, {
+      fsModule,
+    });
     if (threadScopedRollout) {
       return threadScopedRollout;
     }
@@ -385,6 +389,71 @@ function findRecentRolloutFileForContextRead(
   }
 
   return null;
+}
+
+// Keeps the fast "recent files first" path, but falls back to a full-tree scan
+// so older valid thread rollouts still recover after many newer sessions exist.
+function findPreferredRolloutFileForThread(root, candidates, threadId, { fsModule = fs } = {}) {
+  const recentMatch = findMostRecentRolloutFileForThread(candidates, threadId);
+  if (recentMatch) {
+    return recentMatch;
+  }
+
+  return findNewestRolloutFileForThread(root, threadId, { fsModule });
+}
+
+// Prefers the newest filename-scoped rollout for a thread instead of the first
+// filesystem hit, which can be an older stale session for the same thread.
+function findMostRecentRolloutFileForThread(candidates, threadId) {
+  if (!Array.isArray(candidates) || !threadId) {
+    return null;
+  }
+
+  const match = candidates.find(({ filePath }) => path.basename(filePath).includes(threadId));
+  return match?.filePath || null;
+}
+
+// Scans the whole sessions tree only when the recent candidate window missed the
+// thread, still preferring the newest matching rollout instead of the first hit.
+function findNewestRolloutFileForThread(root, threadId, { fsModule = fs } = {}) {
+  if (!threadId || !fsModule.existsSync(root)) {
+    return null;
+  }
+
+  const stack = [root];
+  let newestMatch = null;
+
+  while (stack.length > 0) {
+    const current = stack.pop();
+    const entries = fsModule.readdirSync(current, { withFileTypes: true });
+
+    for (const entry of entries) {
+      const fullPath = path.join(current, entry.name);
+      if (entry.isDirectory()) {
+        stack.push(fullPath);
+        continue;
+      }
+
+      if (
+        !entry.isFile()
+        || !entry.name.startsWith("rollout-")
+        || !entry.name.endsWith(".jsonl")
+        || !entry.name.includes(threadId)
+      ) {
+        continue;
+      }
+
+      const stat = fsModule.statSync(fullPath);
+      if (!newestMatch || stat.mtimeMs > newestMatch.mtimeMs) {
+        newestMatch = {
+          filePath: fullPath,
+          mtimeMs: stat.mtimeMs,
+        };
+      }
+    }
+  }
+
+  return newestMatch?.filePath || null;
 }
 
 function collectRecentRolloutFiles(
@@ -724,6 +793,105 @@ function readLatestContextWindowUsage({
     : null;
 }
 
+// Reads the newest apply_patch payload captured for a specific thread/turn from the local rollout files.
+function readLatestThreadPatch({
+  threadId = "",
+  turnId = "",
+  fsModule = fs,
+  candidateLimit = DEFAULT_CONTEXT_READ_CANDIDATE_LIMIT,
+  lookbackMs = DEFAULT_RECENT_ROLLOUT_LOOKBACK_MS,
+  now = () => Date.now(),
+} = {}) {
+  const rolloutRoot = resolveSessionsRoot();
+  const rolloutPath = findRecentRolloutFileForContextRead(rolloutRoot, {
+    threadId,
+    turnId,
+    fsModule,
+    candidateLimit,
+    lookbackMs,
+    now,
+  });
+  if (!rolloutPath) {
+    return null;
+  }
+
+  const result = readLatestApplyPatchFromRolloutFile(rolloutPath, {
+    fsModule,
+    turnId,
+  });
+  return result
+    ? {
+      rolloutPath,
+      ...result,
+    }
+    : null;
+}
+
+function readLatestApplyPatchFromRolloutFile(
+  rolloutPath,
+  {
+    fsModule = fs,
+    turnId = "",
+  } = {}
+) {
+  const contents = fsModule.readFileSync(rolloutPath, "utf8");
+  const lines = contents.split(/\r?\n/);
+  let currentTurnId = null;
+  let latestPatch = null;
+
+  for (const rawLine of lines) {
+    const line = rawLine.trim();
+    if (!line) {
+      continue;
+    }
+
+    let parsed;
+    try {
+      parsed = JSON.parse(line);
+    } catch {
+      continue;
+    }
+
+    if (parsed?.type === "turn_context" && parsed.payload && typeof parsed.payload === "object") {
+      currentTurnId = readNonEmptyString(parsed.payload.turn_id)
+        || readNonEmptyString(parsed.payload.turnId)
+        || currentTurnId;
+      continue;
+    }
+
+    const payload = parsed?.payload;
+    if (!payload || typeof payload !== "object") {
+      continue;
+    }
+
+    if (
+      parsed.type !== "response_item"
+      || payload.type !== "custom_tool_call"
+      || readNonEmptyString(payload.name) !== "apply_patch"
+    ) {
+      continue;
+    }
+
+    if (turnId && currentTurnId && currentTurnId !== turnId) {
+      continue;
+    }
+
+    const patch = readNonEmptyString(payload.input);
+    if (!patch) {
+      continue;
+    }
+
+    latestPatch = {
+      callId: readNonEmptyString(payload.call_id) || null,
+      patch,
+      timestamp: readNonEmptyString(parsed.timestamp) || null,
+      turnId: currentTurnId || null,
+    };
+  }
+
+  return latestPatch;
+}
+
 function formatTimestamp(value) {
   if (!value || typeof value !== "string") {
     return "[time?]";
@@ -750,6 +918,10 @@ function previewText(value) {
   return `${normalized.slice(0, 117)}...`;
 }
 
+function readNonEmptyString(value) {
+  return typeof value === "string" && value.trim() ? value : null;
+}
+
 function readFileSize(filePath, fsModule = fs) {
   return fsModule.statSync(filePath).size;
 }
@@ -764,6 +936,7 @@ module.exports = {
   contextUsageFromTokenCountPayload,
   findRecentRolloutFileForContextRead,
   readLatestContextWindowUsage,
+  readLatestThreadPatch,
   resolveSessionsRoot,
   findRolloutFileForThread,
 };

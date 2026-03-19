@@ -1,4 +1,4 @@
-const APP_VERSION = "20260318a";
+const APP_VERSION = "20260319c";
 const CLEANUP_MARKER = `remodex-web.bootstrap-cleanup.${APP_VERSION}`;
 
 const needsReload = await cleanupLegacyAppShell();
