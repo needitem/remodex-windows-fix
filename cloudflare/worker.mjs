@@ -18,7 +18,7 @@ export default {
       });
     }
 
-    if (url.pathname === "/app") {
+    if (url.pathname === "/" || url.pathname === "/app") {
       return Response.redirect(`${url.origin}/app/`, 302);
     }
 

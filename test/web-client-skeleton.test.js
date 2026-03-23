@@ -18,7 +18,7 @@ const {
   sign,
 } = require("node:crypto");
 
-const { resolveWebClientAsset } = require("../src/web-client-static");
+const { resolveWebClientAsset, serveWebClientRequest } = require("../src/web-client-static");
 
 test("resolveWebClientAsset maps /app/ to the browser shell entrypoint", () => {
   const asset = resolveWebClientAsset("/app/");
@@ -30,6 +30,17 @@ test("resolveWebClientAsset maps /app/ to the browser shell entrypoint", () => {
 
 test("resolveWebClientAsset blocks traversal outside the web root", () => {
   assert.equal(resolveWebClientAsset("/app/../../package.json"), null);
+});
+
+test("serveWebClientRequest redirects the root path to the browser shell", () => {
+  const res = createMockResponse();
+
+  const handled = serveWebClientRequest({ url: "/" }, res);
+
+  assert.equal(handled, true);
+  assert.equal(res.statusCode, 302);
+  assert.deepEqual(res.headers, { location: "/app/" });
+  assert.equal(res.ended, true);
 });
 
 test("browser relay URL helper appends the session id and iphone role query parameter", async () => {
@@ -706,6 +717,21 @@ function createMemoryStorage() {
     },
     setItem(key, value) {
       map.set(key, value);
+    },
+  };
+}
+
+function createMockResponse() {
+  return {
+    ended: false,
+    headers: null,
+    statusCode: null,
+    end() {
+      this.ended = true;
+    },
+    writeHead(statusCode, headers) {
+      this.statusCode = statusCode;
+      this.headers = headers;
     },
   };
 }

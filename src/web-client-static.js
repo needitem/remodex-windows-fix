@@ -28,7 +28,7 @@ const CONTENT_TYPES = {
 
 function serveWebClientRequest(req, res) {
   const pathname = safePathnameFromRequest(req);
-  if (pathname === WEB_ROUTE_PREFIX) {
+  if (pathname === "/" || pathname === WEB_ROUTE_PREFIX) {
     res.writeHead(302, { location: `${WEB_ROUTE_PREFIX}/` });
     res.end();
     return true;
