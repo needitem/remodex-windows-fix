@@ -2,12 +2,15 @@
 // Purpose: Converts raw codex account/auth responses into a sanitized status payload for the phone UI.
 // Layer: CLI helper
 // Exports: composeAccountStatus, composeSanitizedAuthStatusFromSettledResults, redactAuthStatus
-// Depends on: none
+// Depends on: ../package.json
+
+const { version: bridgePackageVersion = "" } = require("../package.json");
 
 function composeAccountStatus({
   accountRead = null,
   authStatus = null,
   loginInFlight = false,
+  bridgeVersionInfo = null,
 } = {}) {
   const account = accountRead?.account || null;
   const authToken = normalizeString(authStatus?.authToken);
@@ -35,6 +38,11 @@ function composeAccountStatus({
     tokenReady,
     expiresAt: null,
     requiresOpenaiAuth,
+    bridgeVersion: firstNonEmpty([
+      normalizeString(bridgeVersionInfo?.bridgeVersion),
+      normalizeString(bridgePackageVersion),
+    ]) || null,
+    bridgeLatestVersion: normalizeString(bridgeVersionInfo?.bridgeLatestVersion) || null,
   };
 }
 
@@ -43,6 +51,7 @@ function redactAuthStatus(authStatus = null, extras = {}) {
     accountRead: extras.accountRead || null,
     authStatus,
     loginInFlight: Boolean(extras.loginInFlight),
+    bridgeVersionInfo: extras.bridgeVersionInfo || null,
   });
 
   return {
@@ -54,6 +63,8 @@ function redactAuthStatus(authStatus = null, extras = {}) {
     needsReauth: composed.needsReauth,
     tokenReady: composed.tokenReady,
     expiresAt: composed.expiresAt,
+    bridgeVersion: composed.bridgeVersion,
+    bridgeLatestVersion: composed.bridgeLatestVersion,
   };
 }
 
@@ -61,6 +72,7 @@ function composeSanitizedAuthStatusFromSettledResults({
   accountReadResult = null,
   authStatusResult = null,
   loginInFlight = false,
+  bridgeVersionInfo = null,
 } = {}) {
   const accountRead = accountReadResult?.status === "fulfilled" ? accountReadResult.value : null;
   const authStatus = authStatusResult?.status === "fulfilled" ? authStatusResult.value : null;
@@ -74,6 +86,7 @@ function composeSanitizedAuthStatusFromSettledResults({
   return redactAuthStatus(authStatus, {
     accountRead,
     loginInFlight: Boolean(loginInFlight),
+    bridgeVersionInfo,
   });
 }
 

@@ -6,6 +6,7 @@
 
 const test = require("node:test");
 const assert = require("node:assert/strict");
+const { version: packageVersion } = require("../package.json");
 
 const {
   composeSanitizedAuthStatusFromSettledResults,
@@ -41,6 +42,8 @@ test("composeSanitizedAuthStatusFromSettledResults keeps explicit account login 
     needsReauth: false,
     tokenReady: false,
     expiresAt: null,
+    bridgeVersion: packageVersion,
+    bridgeLatestVersion: null,
   });
 });
 

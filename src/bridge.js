@@ -33,6 +33,7 @@ const { createVoiceHandler, resolveVoiceAuth } = require("./voice-handler");
 const {
   composeSanitizedAuthStatusFromSettledResults,
 } = require("./account-status");
+const { createBridgePackageVersionStatusReader } = require("./package-version-status");
 const { createPushNotificationServiceClient } = require("./push-notification-service-client");
 const { createPushNotificationTracker } = require("./push-notification-tracker");
 const {
@@ -43,7 +44,10 @@ const { createBridgeSecureTransport } = require("./secure-transport");
 const { createRolloutLiveMirrorController } = require("./rollout-live-mirror");
 
 const execFileAsync = promisify(execFile);
-const RELAY_PING_INTERVAL_MS = 25_000;
+const RELAY_WATCHDOG_PING_INTERVAL_MS = 10_000;
+const RELAY_WATCHDOG_STALE_AFTER_MS = 25_000;
+const BRIDGE_STATUS_HEARTBEAT_INTERVAL_MS = 5_000;
+const STALE_RELAY_STATUS_MESSAGE = "Relay heartbeat stalled; reconnect pending.";
 
 function startBridge({
   config: explicitConfig = null,
@@ -92,6 +96,7 @@ function startBridge({
     pushServiceClient,
     previewMaxChars: config.pushPreviewMaxChars,
   });
+  const readBridgePackageVersionStatus = createBridgePackageVersionStatusReader();
 
   let socket = null;
   let isShuttingDown = false;
@@ -99,6 +104,9 @@ function startBridge({
   let reconnectTimer = null;
   let lastConnectionStatus = null;
   let relayHeartbeatTimer = null;
+  let statusHeartbeatTimer = null;
+  let lastRelayActivityAt = 0;
+  let lastPublishedBridgeStatus = null;
   // A freshly connected external Codex endpoint still needs a real initialize
   // before it can serve thread/list or thread/start.
   let codexHandshakeState = "cold";
@@ -154,6 +162,8 @@ function startBridge({
     logPrefix: "[remodex]",
   });
 
+  startBridgeStatusHeartbeat();
+
   publishBridgeStatus({
     state: "starting",
     connectionStatus: "starting",
@@ -186,6 +196,34 @@ function startBridge({
 
     clearTimeout(reconnectTimer);
     reconnectTimer = null;
+  }
+
+  function startBridgeStatusHeartbeat() {
+    if (statusHeartbeatTimer) {
+      return;
+    }
+
+    statusHeartbeatTimer = setInterval(() => {
+      if (!lastPublishedBridgeStatus || isShuttingDown) {
+        return;
+      }
+
+      onBridgeStatus?.(buildHeartbeatBridgeStatus(lastPublishedBridgeStatus, lastRelayActivityAt));
+    }, BRIDGE_STATUS_HEARTBEAT_INTERVAL_MS);
+    statusHeartbeatTimer.unref?.();
+  }
+
+  function clearBridgeStatusHeartbeat() {
+    if (!statusHeartbeatTimer) {
+      return;
+    }
+
+    clearInterval(statusHeartbeatTimer);
+    statusHeartbeatTimer = null;
+  }
+
+  function markRelayActivity() {
+    lastRelayActivityAt = Date.now();
   }
 
   function clearRelayHeartbeat() {
@@ -223,6 +261,7 @@ function startBridge({
         isShuttingDown = true;
         clearReconnectTimer();
         clearRelayHeartbeat();
+        clearBridgeStatusHeartbeat();
       });
       return;
     }
@@ -254,9 +293,9 @@ function startBridge({
       },
     });
     socket = nextSocket;
-    let awaitingRelayPong = false;
 
     nextSocket.on("open", () => {
+      markRelayActivity();
       clearReconnectTimer();
       clearRelayHeartbeat();
       reconnectAttempt = 0;
@@ -269,26 +308,24 @@ function startBridge({
           return;
         }
 
-        if (awaitingRelayPong) {
+        if (hasRelayConnectionGoneStale(lastRelayActivityAt)) {
+          console.warn("[remodex] relay heartbeat stalled; forcing reconnect");
+          logConnectionStatus("disconnected");
           nextSocket.terminate();
           return;
         }
 
-        awaitingRelayPong = true;
         try {
           nextSocket.ping();
         } catch {
           nextSocket.terminate();
         }
-      }, RELAY_PING_INTERVAL_MS);
+      }, RELAY_WATCHDOG_PING_INTERVAL_MS);
       relayHeartbeatTimer.unref?.();
     });
 
-    nextSocket.on("pong", () => {
-      awaitingRelayPong = false;
-    });
-
     nextSocket.on("message", (data) => {
+      markRelayActivity();
       const wireMessage = typeof data === "string" ? data : data.toString("utf8");
       if (secureTransport.handleIncomingWireMessage(wireMessage, {
         sendControlMessage(controlMessage) {
@@ -303,6 +340,14 @@ function startBridge({
       })) {
         return;
       }
+    });
+
+    nextSocket.on("ping", () => {
+      markRelayActivity();
+    });
+
+    nextSocket.on("pong", () => {
+      markRelayActivity();
     });
 
     nextSocket.on("close", (code) => {
@@ -346,6 +391,7 @@ function startBridge({
 
   codex.onClose(() => {
     logConnectionStatus("disconnected");
+    clearBridgeStatusHeartbeat();
     publishBridgeStatus({
       state: "stopped",
       connectionStatus: "disconnected",
@@ -371,11 +417,13 @@ function startBridge({
     isShuttingDown = true;
     clearReconnectTimer();
     clearRelayHeartbeat();
+    clearBridgeStatusHeartbeat();
   }));
   process.on("SIGTERM", () => shutdown(codex, () => socket, () => {
     isShuttingDown = true;
     clearReconnectTimer();
     clearRelayHeartbeat();
+    clearBridgeStatusHeartbeat();
   }));
 
   function handleApplicationMessage(rawMessage) {
@@ -469,7 +517,7 @@ function startBridge({
   }
 
   async function readSanitizedAuthStatus() {
-    const [accountReadResult, authStatusResult] = await Promise.allSettled([
+    const [accountReadResult, authStatusResult, bridgeVersionInfoResult] = await Promise.allSettled([
       sendCodexRequest("account/read", {
         refreshToken: false,
       }),
@@ -477,6 +525,7 @@ function startBridge({
         includeToken: true,
         refreshToken: true,
       }),
+      readBridgePackageVersionStatus(),
     ]);
 
     return composeSanitizedAuthStatusFromSettledResults({
@@ -488,6 +537,9 @@ function startBridge({
         : accountReadResult,
       authStatusResult,
       loginInFlight: Boolean(pendingAuthLogin.loginId),
+      bridgeVersionInfo: bridgeVersionInfoResult.status === "fulfilled"
+        ? bridgeVersionInfoResult.value
+        : null,
     });
   }
 
@@ -820,6 +872,7 @@ function startBridge({
   }
 
   function publishBridgeStatus(status) {
+    lastPublishedBridgeStatus = status;
     onBridgeStatus?.(status);
   }
 
@@ -966,4 +1019,48 @@ function safeParseJSON(value) {
   }
 }
 
-module.exports = { startBridge };
+function hasRelayConnectionGoneStale(
+  lastActivityAt,
+  {
+    now = Date.now(),
+    staleAfterMs = RELAY_WATCHDOG_STALE_AFTER_MS,
+  } = {}
+) {
+  return Number.isFinite(lastActivityAt)
+    && Number.isFinite(now)
+    && now - lastActivityAt >= staleAfterMs;
+}
+
+function buildHeartbeatBridgeStatus(
+  status,
+  lastActivityAt,
+  {
+    now = Date.now(),
+    staleAfterMs = RELAY_WATCHDOG_STALE_AFTER_MS,
+    staleMessage = STALE_RELAY_STATUS_MESSAGE,
+  } = {}
+) {
+  if (!status || typeof status !== "object") {
+    return status;
+  }
+
+  if (status.connectionStatus !== "connected") {
+    return status;
+  }
+
+  if (!hasRelayConnectionGoneStale(lastActivityAt, { now, staleAfterMs })) {
+    return status;
+  }
+
+  return {
+    ...status,
+    connectionStatus: "disconnected",
+    lastError: staleMessage,
+  };
+}
+
+module.exports = {
+  buildHeartbeatBridgeStatus,
+  hasRelayConnectionGoneStale,
+  startBridge,
+};
