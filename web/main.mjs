@@ -16,6 +16,7 @@ import {
 import { ACCESS_OPTIONS, MODEL_OPTIONS, REASONING_OPTIONS, REPOSITORY_BRANCHES, SPEED_OPTIONS } from "./modules/mock-data.mjs";
 import { loadPreferences, savePreferences } from "./modules/preferences.mjs";
 import { createScannerController } from "./modules/scanner-controller.mjs";
+import { describeMobileDockState } from "./modules/mobile-dock-state.mjs";
 import {
   approvalPolicyForAccess,
   buildTurnStartParams,
@@ -93,6 +94,16 @@ const elements = mapElements();
 const scanner = createScannerController({ videoElement: elements.scannerVideo });
 let refreshTimer = 0;
 const patchRefreshTimers = new Map();
+const modalFocusRestore = new WeakMap();
+const swipeGesture = {
+  active: false,
+  chatId: "",
+  horizontal: false,
+  lastX: 0,
+  mode: "",
+  startX: 0,
+  startY: 0,
+};
 
 void init();
 
@@ -112,6 +123,7 @@ function mapElements() {
   return {
     accessSelect: document.querySelector("#access-select"),
     activeTurnCount: document.querySelector("#active-turn-count"),
+    appFrame: document.querySelector(".app-frame"),
     deckSummaryCopy: document.querySelector("#deck-summary-copy"),
     deckSummaryStatus: document.querySelector("#deck-summary-status"),
     deckSummaryTitle: document.querySelector("#deck-summary-title"),
@@ -124,6 +136,8 @@ function mapElements() {
     closeSettingsButton: document.querySelector("#close-settings-button"),
     composerInput: document.querySelector("#composer-input"),
     composerStatus: document.querySelector("#composer-status"),
+    conversationHeader: document.querySelector(".conversation-header"),
+    conversationShell: document.querySelector(".conversation-shell"),
     connectButton: document.querySelector("#connect-button"),
     connectionDot: document.querySelector("#connection-dot"),
     connectionLabel: document.querySelector("#connection-label"),
@@ -145,6 +159,11 @@ function mapElements() {
     messageList: document.querySelector("#message-list"),
     modelSelect: document.querySelector("#model-select"),
     mobileBackButton: document.querySelector("#mobile-back-button"),
+    mobileTabBar: document.querySelector(".mobile-tab-bar"),
+    mobileDeckButton: document.querySelector("#mobile-deck-button"),
+    mobileNewButton: document.querySelector("#mobile-new-button"),
+    mobileScanDockButton: document.querySelector("#mobile-scan-dock-button"),
+    mobileSettingsDockButton: document.querySelector("#mobile-settings-dock-button"),
     newChatButton: document.querySelector("#new-chat-button"),
     openScannerButton: document.querySelector("#open-scanner-button"),
     openSettingsButton: document.querySelector("#open-settings-button"),
@@ -166,7 +185,7 @@ function mapElements() {
     searchMeta: document.querySelector("#search-meta"),
     searchInput: document.querySelector("#search-input"),
     sendButton: document.querySelector("#send-button"),
-    stageConnectionPill: document.querySelector("#stage-connection-pill"),
+    sidebar: document.querySelector(".sidebar"),
     settingsAccessSelect: document.querySelector("#settings-access-select"),
     settingsModelSelect: document.querySelector("#settings-model-select"),
     settingsPanel: document.querySelector("#settings-sheet"),
@@ -199,11 +218,19 @@ function mapElements() {
 function wireEvents() {
   elements.searchInput.addEventListener("input", (event) => { state.searchQuery = event.target.value.trim().toLowerCase(); renderSidebar(); });
   elements.newChatButton.addEventListener("click", () => { void createChat(); });
+  elements.mobileDeckButton?.addEventListener("click", () => {
+    pulseHaptic(8);
+    setMobileThreadOpen(false);
+  });
+  elements.mobileNewButton?.addEventListener("click", () => { void createChat(); });
+  elements.mobileScanDockButton?.addEventListener("click", openScanner);
+  elements.mobileSettingsDockButton?.addEventListener("click", openSettings);
   elements.createBranchButton.addEventListener("click", createBranch);
   elements.sendButton.addEventListener("click", sendMessage);
   elements.threadDiffButton.addEventListener("click", () => { void openDiff(); });
   elements.refreshDiffButton.addEventListener("click", () => { void refreshDiffForSelectedChat(); });
   elements.closeDiffButton.addEventListener("click", closeDiff);
+  elements.composerInput.addEventListener("input", autosizeComposer);
   elements.composerInput.addEventListener("keydown", (event) => { if ((event.metaKey || event.ctrlKey) && event.key === "Enter") { event.preventDefault(); void sendMessage(); } });
   elements.repoSelect.addEventListener("change", (event) => mutateSelectedChat(async (chat) => {
     const nextRepo = event.target.value;
@@ -249,9 +276,11 @@ function wireEvents() {
   elements.relayUrlInput.addEventListener("change", (event) => { state.relayOverride = event.target.value.trim(); saveStoredRelayOverride(state.relayOverride); addLog("info", "Updated relay base URL.", state.relayOverride || "inferred"); renderConnection(); });
   elements.connectButton.addEventListener("click", connectRelay);
   elements.disconnectButton.addEventListener("click", () => void disconnectRelay(false));
+  document.addEventListener("keydown", handleGlobalKeydown);
+  wireSwipeGestures();
   elements.mobileBackButton.addEventListener("click", () => {
-    state.mobileThreadOpen = false;
-    renderBody();
+    pulseHaptic(8);
+    setMobileThreadOpen(false);
   });
 }
 
@@ -267,6 +296,8 @@ function renderAll() {
   renderSettings();
   renderDiffViewer();
   renderLogs();
+  autosizeComposer();
+  renderAppChrome();
 }
 
 function renderBody() {
@@ -274,6 +305,12 @@ function renderBody() {
   elements.body.classList.toggle("mobile-thread-open", state.mobileThreadOpen && isNarrowViewport());
   elements.body.classList.toggle("font-rounded", state.preferences.font === "rounded");
   elements.body.classList.toggle("no-glass", state.preferences.glass === false);
+}
+
+function setMobileThreadOpen(nextOpen) {
+  state.mobileThreadOpen = Boolean(nextOpen);
+  renderBody();
+  renderAppChrome();
 }
 
 function renderSelects() {
@@ -318,6 +355,7 @@ function renderSidebar() {
     for (const chat of chats) {
       const button = document.createElement("button");
       button.type = "button";
+      button.dataset.chatId = chat.id;
       const isActive = chat.id === state.selectedChatId;
       const isPending = chatHasPendingTurn(chat);
       button.className = `chat-item${isActive ? " is-active" : ""}${isPending ? " is-pending" : ""}`;
@@ -339,9 +377,11 @@ function renderSidebar() {
         applyThreadRuntimeToPreferences(chat);
         state.sidebarOpen = false;
         if (isNarrowViewport()) {
-          state.mobileThreadOpen = true;
+          setMobileThreadOpen(true);
         }
+        pulseHaptic(10);
         renderAll();
+        focusComposer();
         if (chat.threadId && !chat.messagesLoaded) {
           void readRemoteThread(chat.threadId);
         }
@@ -438,13 +478,13 @@ function renderConnection() {
   elements.connectionDot.className = "connection-dot";
   elements.connectionDot.classList.add(`state-${state.connection.status}`);
   elements.composerStatus.textContent = state.connection.label;
-  if (elements.stageConnectionPill) {
-    elements.stageConnectionPill.className = `stage-pill stage-pill-${state.connection.status}`;
-    elements.stageConnectionPill.textContent = state.connection.label;
-  }
   renderDeckSummary();
   renderThreadSpotlight(selectedChat());
   renderDiffViewer();
+}
+
+function renderAppChrome() {
+  renderMobileDock();
 }
 
 function renderRuntimeStrip() {
@@ -473,6 +513,23 @@ function renderDeckSummary() {
       ? "Pairing exists in local storage. Reconnect when you want the live thread list and runtime summaries back."
       : "Load pairing JSON or scan a QR code to pull live Remodex threads into this browser workspace.");
   elements.deckSummaryStatus.className = `deck-summary-status deck-summary-status-${state.connection.status}`;
+}
+
+function renderMobileDock() {
+  const scannerOpen = elements.scannerModal.classList.contains("is-open");
+  const settingsOpen = elements.settingsPanel.classList.contains("is-open");
+  const { currentView, interactive } = describeMobileDockState({
+    isNarrowViewport: isNarrowViewport(),
+    mobileThreadOpen: state.mobileThreadOpen,
+    modalOpen: anyModalOpen(),
+    scannerOpen,
+    settingsOpen,
+  });
+
+  toggleDockButton(elements.mobileDeckButton, currentView === "deck");
+  toggleDockButton(elements.mobileScanDockButton, currentView === "scan");
+  toggleDockButton(elements.mobileSettingsDockButton, currentView === "settings");
+  syncFocusableRegion(elements.mobileTabBar, interactive);
 }
 
 function renderThreadSpotlight(chat) {
@@ -671,11 +728,13 @@ function createLocalChat(folderName = selectedChat()?.repo || state.conversation
   group.chats.unshift(chat);
   state.selectedChatId = chat.id;
   if (isNarrowViewport()) {
-    state.mobileThreadOpen = true;
+    setMobileThreadOpen(true);
   }
   if (render) {
     addLog("info", "Created a new local draft thread.", group.folder);
+    pulseHaptic(12);
     renderAll();
+    focusComposer();
   }
   return chat;
 }
@@ -700,6 +759,8 @@ async function sendMessage() {
   chat.access = elements.accessSelect.value;
   elements.composerInput.value = "";
   persistThreadCacheForChat(chat);
+  autosizeComposer();
+  pulseHaptic(16);
   renderAll();
 
   if (!state.client) {
@@ -785,15 +846,20 @@ function clearPairing() {
 }
 
 function openSettings() {
+  pulseHaptic(10);
   openModal(elements.settingsPanel);
+  renderAppChrome();
 }
 
 function closeSettings() {
   closeModal(elements.settingsPanel);
+  renderAppChrome();
 }
 
 function openScanner() {
+  pulseHaptic(10);
   openModal(elements.scannerModal);
+  renderAppChrome();
   elements.scannerStatus.textContent = state.capabilities.secureContext
     ? "Use the rear camera or import a QR image."
     : "This page needs HTTPS or localhost for camera access.";
@@ -805,6 +871,7 @@ function openScanner() {
 function closeScanner() {
   scanner.stop();
   closeModal(elements.scannerModal);
+  renderAppChrome();
 }
 
 async function openDiff() {
@@ -813,7 +880,9 @@ async function openDiff() {
     return;
   }
 
+  pulseHaptic(10);
   openModal(elements.diffSheet);
+  renderAppChrome();
   renderDiffViewer();
 
   if (state.diffViewer.sourceThreadId !== chat.threadId || state.diffViewer.status === "idle" || state.diffViewer.status === "error") {
@@ -823,6 +892,7 @@ async function openDiff() {
 
 function closeDiff() {
   closeModal(elements.diffSheet);
+  renderAppChrome();
 }
 
 async function refreshDiffForSelectedChat() {
@@ -2693,9 +2763,16 @@ function openModal(element) {
   if (!element) {
     return;
   }
+  const activeElement = document.activeElement;
+  modalFocusRestore.set(element, activeElement instanceof HTMLElement ? activeElement : null);
   element.classList.add("is-open");
   element.removeAttribute("inert");
   element.setAttribute("aria-hidden", "false");
+  elements.body.classList.add("modal-open");
+  window.requestAnimationFrame(() => {
+    const focusTarget = element.querySelector("button:not([disabled]), input:not([disabled]), select:not([disabled]), textarea:not([disabled]), [tabindex]:not([tabindex='-1'])");
+    focusTarget?.focus();
+  });
 }
 
 function closeModal(element) {
@@ -2711,10 +2788,324 @@ function closeModal(element) {
   element.classList.remove("is-open");
   element.setAttribute("aria-hidden", "true");
   element.setAttribute("inert", "");
+  if (!anyModalOpen()) {
+    elements.body.classList.remove("modal-open");
+  }
+
+  const restoreTarget = modalFocusRestore.get(element);
+  if (restoreTarget instanceof HTMLElement) {
+    restoreTarget.focus({ preventScroll: true });
+  }
+}
+
+function anyModalOpen() {
+  return elements.settingsPanel.classList.contains("is-open")
+    || elements.scannerModal.classList.contains("is-open")
+    || elements.diffSheet.classList.contains("is-open");
+}
+
+function wireSwipeGestures() {
+  if (!elements.appFrame) {
+    return;
+  }
+
+  elements.appFrame.addEventListener("touchstart", handleSwipeStart, { passive: true });
+  elements.appFrame.addEventListener("touchmove", handleSwipeMove, { passive: false });
+  elements.appFrame.addEventListener("touchend", handleSwipeEnd, { passive: true });
+  elements.appFrame.addEventListener("touchcancel", resetSwipeGesture, { passive: true });
+}
+
+function handleSwipeStart(event) {
+  if (!isNarrowViewport() || anyModalOpen()) {
+    resetSwipeGesture();
+    return;
+  }
+
+  const touch = event.touches?.[0];
+  const target = event.target instanceof Element ? event.target : null;
+  if (!touch || !target || isBlockedSwipeTarget(target)) {
+    resetSwipeGesture();
+    return;
+  }
+
+  if (state.mobileThreadOpen) {
+    const startedFromEdge = touch.clientX <= 28;
+    const startedFromHeader = Boolean(target.closest(".conversation-header"));
+    if (!startedFromEdge && !startedFromHeader) {
+      resetSwipeGesture();
+      return;
+    }
+    swipeGesture.mode = "close";
+  } else {
+    const swipedChatId = target.closest(".chat-item")?.dataset.chatId || "";
+    if ((!selectedChat() && !swipedChatId) || !target.closest(".sidebar")) {
+      resetSwipeGesture();
+      return;
+    }
+    swipeGesture.mode = "open";
+  }
+
+  swipeGesture.active = true;
+  swipeGesture.chatId = target.closest(".chat-item")?.dataset.chatId || state.selectedChatId || "";
+  swipeGesture.horizontal = false;
+  swipeGesture.lastX = touch.clientX;
+  swipeGesture.startX = touch.clientX;
+  swipeGesture.startY = touch.clientY;
+}
+
+function handleSwipeMove(event) {
+  if (!swipeGesture.active) {
+    return;
+  }
+
+  const touch = event.touches?.[0];
+  if (!touch) {
+    return;
+  }
+
+  swipeGesture.lastX = touch.clientX;
+  const deltaX = touch.clientX - swipeGesture.startX;
+  const deltaY = touch.clientY - swipeGesture.startY;
+
+  if (!swipeGesture.horizontal) {
+    if (Math.abs(deltaX) < 10 && Math.abs(deltaY) < 10) {
+      return;
+    }
+    if (Math.abs(deltaY) >= Math.abs(deltaX)) {
+      resetSwipeGesture();
+      return;
+    }
+    swipeGesture.horizontal = true;
+  }
+
+  const movingInExpectedDirection = swipeGesture.mode === "close"
+    ? deltaX > 0
+    : deltaX < 0;
+  if (!movingInExpectedDirection) {
+    return;
+  }
+
+  event.preventDefault();
+  updateSwipePreview(deltaX);
+}
+
+function handleSwipeEnd(event) {
+  if (!swipeGesture.active) {
+    return;
+  }
+
+  const changedTouch = event.changedTouches?.[0];
+  const endX = changedTouch?.clientX ?? swipeGesture.lastX;
+  const deltaX = endX - swipeGesture.startX;
+  const completed = swipeGesture.mode === "close"
+    ? deltaX > 72
+    : deltaX < -72;
+
+  clearSwipePreview();
+  if (completed) {
+    pulseHaptic(10);
+    let chat = selectedChat();
+    if (swipeGesture.mode === "open" && swipeGesture.chatId) {
+      state.selectedChatId = swipeGesture.chatId;
+      chat = selectedChat();
+      if (chat) {
+        applyThreadRuntimeToPreferences(chat);
+      }
+    }
+    state.mobileThreadOpen = swipeGesture.mode === "open";
+    renderAll();
+    if (state.mobileThreadOpen && chat?.threadId && !chat.messagesLoaded) {
+      void readRemoteThread(chat.threadId);
+    }
+  }
+  resetSwipeGesture();
+}
+
+function updateSwipePreview(deltaX) {
+  if (!elements.sidebar || !elements.conversationShell) {
+    return;
+  }
+
+  const distance = swipeGesture.mode === "close"
+    ? Math.max(0, deltaX)
+    : Math.max(0, -deltaX);
+  const progress = Math.min(distance / 120, 1);
+
+  elements.sidebar.classList.add("is-gesture-sliding");
+  elements.conversationShell.classList.add("is-gesture-sliding");
+  elements.conversationShell.style.visibility = "visible";
+  elements.conversationShell.style.pointerEvents = "auto";
+
+  if (swipeGesture.mode === "close") {
+    elements.conversationShell.style.transform = `translateX(${distance}px)`;
+    elements.conversationShell.style.opacity = String(1 - progress * 0.28);
+    elements.sidebar.style.transform = `translateX(${Math.round(-36 + (36 * progress))}px)`;
+    elements.sidebar.style.opacity = String(0.45 + progress * 0.55);
+    return;
+  }
+
+  elements.conversationShell.style.transform = `translateX(${Math.max(28 - distance, 0)}px)`;
+  elements.conversationShell.style.opacity = String(0.18 + progress * 0.82);
+  elements.sidebar.style.transform = `translateX(${-Math.min(distance * 0.12, 24)}px)`;
+  elements.sidebar.style.opacity = String(1 - progress * 0.22);
+}
+
+function clearSwipePreview() {
+  if (!elements.sidebar || !elements.conversationShell) {
+    return;
+  }
+
+  elements.sidebar.classList.remove("is-gesture-sliding");
+  elements.conversationShell.classList.remove("is-gesture-sliding");
+  elements.sidebar.style.removeProperty("transform");
+  elements.sidebar.style.removeProperty("opacity");
+  elements.conversationShell.style.removeProperty("transform");
+  elements.conversationShell.style.removeProperty("opacity");
+  elements.conversationShell.style.removeProperty("visibility");
+  elements.conversationShell.style.removeProperty("pointer-events");
+}
+
+function resetSwipeGesture() {
+  clearSwipePreview();
+  swipeGesture.active = false;
+  swipeGesture.chatId = "";
+  swipeGesture.horizontal = false;
+  swipeGesture.lastX = 0;
+  swipeGesture.mode = "";
+  swipeGesture.startX = 0;
+  swipeGesture.startY = 0;
+}
+
+function isBlockedSwipeTarget(target) {
+  return Boolean(target.closest("input, textarea, select, option, [contenteditable='true']"));
 }
 
 function isNarrowViewport() {
   return window.matchMedia("(max-width: 920px)").matches;
+}
+
+function handleGlobalKeydown(event) {
+  if (event.key !== "Escape" || event.defaultPrevented) {
+    return;
+  }
+
+  if (elements.diffSheet.classList.contains("is-open")) {
+    event.preventDefault();
+    closeDiff();
+    return;
+  }
+
+  if (elements.scannerModal.classList.contains("is-open")) {
+    event.preventDefault();
+    closeScanner();
+    return;
+  }
+
+  if (elements.settingsPanel.classList.contains("is-open")) {
+    event.preventDefault();
+    closeSettings();
+    return;
+  }
+
+  const activeTagName = document.activeElement?.tagName || "";
+  if (
+    state.mobileThreadOpen
+    && isNarrowViewport()
+    && activeTagName !== "INPUT"
+    && activeTagName !== "TEXTAREA"
+    && activeTagName !== "SELECT"
+  ) {
+    event.preventDefault();
+    setMobileThreadOpen(false);
+  }
+}
+
+function toggleDockButton(element, active) {
+  if (!element) {
+    return;
+  }
+
+  element.classList.toggle("is-active", active);
+  element.setAttribute("aria-pressed", active ? "true" : "false");
+}
+
+function syncFocusableRegion(element, interactive) {
+  if (!(element instanceof HTMLElement)) {
+    return;
+  }
+
+  if (!interactive && element.contains(document.activeElement)) {
+    if (document.activeElement instanceof HTMLElement) {
+      document.activeElement.blur();
+    }
+  }
+
+  element.setAttribute("aria-hidden", interactive ? "false" : "true");
+  element.toggleAttribute("inert", !interactive);
+
+  // Preserve keyboard fallback behavior even if inert is unsupported.
+  for (const focusable of element.querySelectorAll("button, [href], input, select, textarea, [tabindex]")) {
+    if (!(focusable instanceof HTMLElement)) {
+      continue;
+    }
+
+    if (interactive) {
+      if (!Object.prototype.hasOwnProperty.call(focusable.dataset, "restoreTabindex")) {
+        continue;
+      }
+      const restoreTabindex = focusable.dataset.restoreTabindex;
+      if (restoreTabindex) {
+        focusable.setAttribute("tabindex", restoreTabindex);
+      } else {
+        focusable.removeAttribute("tabindex");
+      }
+      delete focusable.dataset.restoreTabindex;
+      continue;
+    }
+
+    if (!Object.prototype.hasOwnProperty.call(focusable.dataset, "restoreTabindex")) {
+      focusable.dataset.restoreTabindex = focusable.getAttribute("tabindex") || "";
+    }
+    focusable.setAttribute("tabindex", "-1");
+  }
+}
+
+function focusComposer() {
+  if (isNarrowViewport()) {
+    return;
+  }
+
+  window.requestAnimationFrame(() => {
+    elements.composerInput.focus({ preventScroll: true });
+    const end = elements.composerInput.value.length;
+    elements.composerInput.setSelectionRange(end, end);
+  });
+}
+
+function autosizeComposer() {
+  if (!elements.composerInput) {
+    return;
+  }
+
+  const minHeight = isNarrowViewport() ? 92 : 104;
+  const maxHeight = isNarrowViewport() ? 224 : 280;
+  elements.composerInput.style.height = "0px";
+  const nextHeight = Math.min(Math.max(elements.composerInput.scrollHeight, minHeight), maxHeight);
+  elements.composerInput.style.height = `${nextHeight}px`;
+}
+
+function pulseHaptic(duration = 10) {
+  if (!navigator?.vibrate || duration <= 0) {
+    return;
+  }
+
+  if (window.matchMedia("(prefers-reduced-motion: reduce)").matches) {
+    return;
+  }
+
+  try {
+    navigator.vibrate(duration);
+  } catch {}
 }
 
 function labelForReasoningEffort(value) {

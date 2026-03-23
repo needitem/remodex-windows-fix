@@ -460,6 +460,27 @@ test("browser bridge client keeps retrying after a previously ready session drop
   }
 });
 
+test("mobile dock state disables interaction whenever the dock is visually suppressed", async () => {
+  const { describeMobileDockState } = await import("../web/modules/mobile-dock-state.mjs");
+
+  assert.deepEqual(
+    describeMobileDockState({ isNarrowViewport: true }),
+    { currentView: "deck", interactive: true }
+  );
+  assert.deepEqual(
+    describeMobileDockState({ isNarrowViewport: true, mobileThreadOpen: true }),
+    { currentView: "deck", interactive: false }
+  );
+  assert.deepEqual(
+    describeMobileDockState({ isNarrowViewport: true, modalOpen: true, settingsOpen: true }),
+    { currentView: "settings", interactive: false }
+  );
+  assert.deepEqual(
+    describeMobileDockState({ isNarrowViewport: true, modalOpen: true, scannerOpen: true }),
+    { currentView: "scan", interactive: false }
+  );
+});
+
 test("browser bridge client keeps retrying while waiting for the Mac bridge to rejoin", async () => {
   const storage = createMemoryStorage();
   const macIdentity = createOkpKeyPair("ed25519");
