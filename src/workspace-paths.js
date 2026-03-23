@@ -6,7 +6,14 @@
 
 const path = require("path");
 
-const WORKSPACE_PATH_KEYS = new Set(["cwd", "currentWorkingDirectory", "repoRoot", "rolloutPath"]);
+const WORKSPACE_PATH_KEYS = new Set([
+  "cwd",
+  "currentWorkingDirectory",
+  "repoRoot",
+  "rolloutPath",
+  "worktreePath",
+  "localCheckoutPath",
+]);
 const aliasToPath = new Map();
 const pathToAlias = new Map();
 
@@ -126,6 +133,18 @@ function visitWorkspacePathValues(value, visitor) {
       visitor(currentValue, (nextValue) => {
         value[key] = nextValue;
       });
+      continue;
+    }
+
+    if (key === "worktreePathByBranch" && currentValue && typeof currentValue === "object") {
+      for (const [branchName, branchPath] of Object.entries(currentValue)) {
+        if (typeof branchPath !== "string") {
+          continue;
+        }
+        visitor(branchPath, (nextValue) => {
+          currentValue[branchName] = nextValue;
+        });
+      }
       continue;
     }
 

@@ -571,6 +571,109 @@ test("browser bridge client keeps retrying while waiting for the Mac bridge to r
   }
 });
 
+test("browser bridge client ignores stale socket events after a newer reconnect starts", async () => {
+  const storage = createMemoryStorage();
+  const macIdentity = createOkpKeyPair("ed25519");
+  const macEphemeral = createOkpKeyPair("x25519");
+  const previousWindow = globalThis.window;
+  const previousLocalStorage = globalThis.localStorage;
+  const previousWebSocket = globalThis.WebSocket;
+  const previousSetTimeout = globalThis.setTimeout;
+  const previousClearTimeout = globalThis.clearTimeout;
+  const socketInstances = [];
+
+  globalThis.window = {
+    clearTimeout: previousClearTimeout,
+    setTimeout: previousSetTimeout,
+  };
+  globalThis.localStorage = storage;
+
+  try {
+    const {
+      buildTranscriptBytes,
+      nonceForDirection,
+    } = await import(`../web/modules/browser-secure-transport.mjs?case=stale-socket-${Date.now()}`);
+    const { createBrowserBridgeClient } = await import(`../web/modules/browser-bridge-client.mjs?case=stale-socket-${Date.now()}`);
+    const relayServer = createFakeBrowserRelayServer({
+      buildTranscriptBytes,
+      macEphemeral,
+      macIdentity,
+      nonceForDirection,
+      scheduleTask: previousSetTimeout,
+    });
+
+    globalThis.WebSocket = class FakeWebSocket {
+      static CONNECTING = 0;
+      static OPEN = 1;
+      static CLOSING = 2;
+      static CLOSED = 3;
+
+      constructor(url) {
+        this.url = url;
+        this.readyState = FakeWebSocket.CONNECTING;
+        this.listeners = new Map();
+        this.sentMessages = [];
+        socketInstances.push(this);
+
+        previousSetTimeout(() => {
+          this.readyState = FakeWebSocket.OPEN;
+          this.dispatch("open", {});
+        }, 0);
+      }
+
+      addEventListener(type, handler) {
+        const handlers = this.listeners.get(type) || [];
+        handlers.push(handler);
+        this.listeners.set(type, handlers);
+      }
+
+      send(message) {
+        this.sentMessages.push(String(message));
+        relayServer.handleOutgoing(this, String(message));
+      }
+
+      close(code = 1000, reason = "") {
+        this.readyState = FakeWebSocket.CLOSED;
+        this.dispatch("close", { code, reason });
+      }
+
+      dispatch(type, event) {
+        for (const handler of this.listeners.get(type) || []) {
+          handler(event);
+        }
+      }
+    };
+
+    const client = createBrowserBridgeClient({
+      pairingPayload: {
+        sessionId: "session-1",
+        relay: "wss://relay.example/relay",
+        macDeviceId: "mac-1",
+        macIdentityPublicKey: macIdentity.publicKey,
+      },
+    });
+
+    const firstConnect = client.connect();
+    const secondConnect = client.connect();
+    await secondConnect;
+    await firstConnect;
+    const result = await client.listModels();
+
+    assert.equal(result.data[0].model, "gpt-5");
+    assert.equal(socketInstances.length, 2);
+    assert.equal(socketInstances[0].sentMessages.length, 0);
+    assert.ok(socketInstances[1].sentMessages.some((message) => message.includes("\"clientHello\"")));
+
+    await client.disconnect();
+  } finally {
+    globalThis.window = previousWindow;
+    globalThis.localStorage = previousLocalStorage;
+    globalThis.WebSocket = previousWebSocket;
+    globalThis.setTimeout = previousSetTimeout;
+    globalThis.clearTimeout = previousClearTimeout;
+  }
+});
+
 function createMemoryStorage() {
   const map = new Map();
   return {

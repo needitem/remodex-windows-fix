@@ -138,6 +138,9 @@ export function createBrowserBridgeClient({
     });
 
     activeSocket.addEventListener("close", (event) => {
+      if (socket !== activeSocket) {
+        return;
+      }
       if (socket === activeSocket) {
         socket = null;
       }
@@ -195,6 +198,9 @@ export function createBrowserBridgeClient({
     });
 
     activeSocket.addEventListener("error", () => {
+      if (socket !== activeSocket) {
+        return;
+      }
       rejectAllPending("Relay socket error.");
       rejectSecure(new Error("Relay socket error."));
       rejectReady(new Error("Relay socket error."));
@@ -202,6 +208,9 @@ export function createBrowserBridgeClient({
     });
 
     activeSocket.addEventListener("message", (event) => {
+      if (socket !== activeSocket) {
+        return;
+      }
       void handleWireMessage(String(event.data || "")).catch((error) => {
         rejectSecure(error);
         rejectReady(error);
@@ -211,6 +220,9 @@ export function createBrowserBridgeClient({
     });
 
     activeSocket.addEventListener("open", () => {
+      if (socket !== activeSocket) {
+        return;
+      }
       clearReconnectTimer();
       onConnectionState({ detail: "Relay socket open. Starting secure pairing handshake.", label: "Pairing", status: "warning" });
       void secureTransport.startHandshake().then((summary) => {

@@ -4,7 +4,7 @@ import { WEB_ASSETS } from "./web-assets.generated.mjs";
 const CLOSE_CODE_INVALID_SESSION = 4000;
 const CLOSE_CODE_MAC_REPLACED = 4001;
 const CLOSE_CODE_SESSION_UNAVAILABLE = 4002;
-const CLOSE_CODE_IPHONE_REPLACED = 4003;
+const CLOSE_CODE_IPHONE_REPLACED = 1000;
 
 export default {
   async fetch(request, env) {
