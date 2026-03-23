@@ -210,7 +210,7 @@ class CodexDesktopRefresher {
 function readBridgeConfig() {
   const refreshEnabledDefault = process.platform === "win32" ? "true" : "false";
   return {
-    relayUrl: readFirstDefinedEnv(["REMODEX_RELAY", "PHODEX_RELAY"], "wss://api.phodex.app/relay"),
+    relayUrl: readFirstDefinedEnv(["REMODEX_RELAY", "PHODEX_RELAY"], "wss://remodex-relay.th07290828.workers.dev/relay"),
     pushServiceUrl: readFirstDefinedEnv(["REMODEX_PUSH_SERVICE_URL"], ""),
     pushPreviewMaxChars: parseIntegerEnv(
       readFirstDefinedEnv(["REMODEX_PUSH_PREVIEW_MAX_CHARS"], "160"),

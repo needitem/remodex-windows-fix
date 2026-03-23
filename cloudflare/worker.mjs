@@ -50,6 +50,7 @@ export class SessionRelay extends DurableObject {
     this.ctx = ctx;
     this.env = env;
     this.mac = null;
+    this.macRegistration = null;
     this.clients = new Set();
     this.notificationSecret = null;
 
@@ -57,6 +58,7 @@ export class SessionRelay extends DurableObject {
       const metadata = socket.deserializeAttachment() || {};
       if (metadata.role === "mac") {
         this.mac = socket;
+        this.macRegistration = metadata.macRegistration || null;
       } else if (metadata.role === "iphone") {
         this.clients.add(socket);
       }
@@ -89,12 +91,18 @@ export class SessionRelay extends DurableObject {
 
     const pair = new WebSocketPair();
     const [clientSocket, serverSocket] = Object.values(pair);
+    const macRegistration = role === "mac" ? readMacRegistrationHeaders(request.headers, sessionId) : null;
 
     this.ctx.acceptWebSocket(serverSocket);
-    serverSocket.serializeAttachment({ role, sessionId });
+    serverSocket.serializeAttachment({
+      role,
+      sessionId,
+      macRegistration,
+    });
 
     if (role === "mac") {
       this.notificationSecret = readHeaderString(request.headers.get("x-notification-secret"));
+      this.macRegistration = macRegistration;
       if (this.isSocketOpen(this.mac)) {
         this.safeClose(
           this.mac,
@@ -127,6 +135,9 @@ export class SessionRelay extends DurableObject {
     const text = normalizeMessage(message);
 
     if (metadata.role === "mac") {
+      if (this.applyMacRegistrationMessage(socket, metadata, text)) {
+        return;
+      }
       for (const client of this.clients) {
         this.safeSend(client, text);
       }
@@ -158,6 +169,7 @@ export class SessionRelay extends DurableObject {
     if (metadata.role === "mac") {
       if (this.mac === socket) {
         this.mac = null;
+        this.macRegistration = null;
         this.notificationSecret = null;
         console.log(`[relay] Mac disconnected -> ${sessionLabel}`);
         for (const client of this.clients) {
@@ -194,6 +206,21 @@ export class SessionRelay extends DurableObject {
       socket.close(code, reason);
     } catch {}
   }
+
+  applyMacRegistrationMessage(socket, metadata, rawMessage) {
+    const parsed = safeParseJSON(rawMessage);
+    if (parsed?.kind !== "relayMacRegistration" || typeof parsed.registration !== "object") {
+      return false;
+    }
+
+    const macRegistration = normalizeMacRegistration(parsed.registration, metadata.sessionId);
+    this.macRegistration = macRegistration;
+    socket.serializeAttachment({
+      ...metadata,
+      macRegistration,
+    });
+    return true;
+  }
 }
 
 function normalizeMessage(message) {
@@ -218,6 +245,27 @@ function closeWebSocketResponse(code, reason) {
 
 function readHeaderString(value) {
   return typeof value === "string" && value.trim() ? value.trim() : null;
+}
+
+function readMacRegistrationHeaders(headers, sessionId) {
+  return normalizeMacRegistration({
+    macDeviceId: readHeaderString(headers.get("x-mac-device-id")),
+    macIdentityPublicKey: readHeaderString(headers.get("x-mac-identity-public-key")),
+    displayName: readHeaderString(headers.get("x-machine-name")),
+    trustedPhoneDeviceId: readHeaderString(headers.get("x-trusted-phone-device-id")),
+    trustedPhonePublicKey: readHeaderString(headers.get("x-trusted-phone-public-key")),
+  }, sessionId);
+}
+
+function normalizeMacRegistration(registration, sessionId) {
+  return {
+    sessionId,
+    macDeviceId: normalizeNonEmptyString(registration?.macDeviceId),
+    macIdentityPublicKey: normalizeNonEmptyString(registration?.macIdentityPublicKey),
+    displayName: normalizeNonEmptyString(registration?.displayName),
+    trustedPhoneDeviceId: normalizeNonEmptyString(registration?.trustedPhoneDeviceId),
+    trustedPhonePublicKey: normalizeNonEmptyString(registration?.trustedPhonePublicKey),
+  };
 }
 
 function resolveRelayRole(request, url = new URL(request.url)) {
@@ -247,6 +295,22 @@ function shortDigestHex(value) {
   }
 
   return (hash >>> 0).toString(16).padStart(8, "0");
+}
+
+function normalizeNonEmptyString(value) {
+  return typeof value === "string" && value.trim() ? value.trim() : "";
+}
+
+function safeParseJSON(value) {
+  if (typeof value !== "string" || !value.trim()) {
+    return null;
+  }
+
+  try {
+    return JSON.parse(value);
+  } catch {
+    return null;
+  }
 }
 
 function jsonResponse(value) {
