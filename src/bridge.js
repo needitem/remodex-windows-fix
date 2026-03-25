@@ -48,6 +48,7 @@ const RELAY_WATCHDOG_PING_INTERVAL_MS = 10_000;
 const RELAY_WATCHDOG_STALE_AFTER_MS = 25_000;
 const BRIDGE_STATUS_HEARTBEAT_INTERVAL_MS = 5_000;
 const STALE_RELAY_STATUS_MESSAGE = "Relay heartbeat stalled; reconnect pending.";
+const RELAY_HISTORY_IMAGE_REFERENCE_URL = "remodex://history-image-elided";
 
 function startBridge({
   config: explicitConfig = null,
@@ -113,10 +114,15 @@ function startBridge({
   const forwardedInitializeRequestIds = new Set();
   const bridgeManagedCodexRequestWaiters = new Map();
   const forwardedRequestMethodsById = new Map();
+  const relaySanitizedResponseMethodsById = new Map();
   const trackedForwardedRequestMethods = new Set([
     "account/login/start",
     "account/login/cancel",
     "account/logout",
+  ]);
+  const relaySanitizedRequestMethods = new Set([
+    "thread/read",
+    "thread/resume",
   ]);
   const forwardedRequestMethodTTLms = 2 * 60_000;
   const pendingAuthLogin = {
@@ -384,8 +390,9 @@ function startBridge({
     desktopRefresher.handleOutbound(message);
     pushNotificationTracker.handleOutbound(message);
     rememberThreadFromMessage("codex", message);
-    registerWorkspacePathsFromMessage(message);
-    const forwardedMessage = rewriteWorkspacePathsForDisplay(message);
+    const sanitizedMessage = sanitizeRelayBoundCodexMessage(message);
+    registerWorkspacePathsFromMessage(sanitizedMessage);
+    const forwardedMessage = rewriteWorkspacePathsForDisplay(sanitizedMessage);
     secureTransport.queueOutboundApplicationMessage(forwardedMessage, sendRelayWireMessage);
   });
 
@@ -595,15 +602,40 @@ function startBridge({
     const parsed = safeParseJSON(rawMessage);
     const method = typeof parsed?.method === "string" ? parsed.method.trim() : "";
     const requestId = parsed?.id;
-    if (!method || requestId == null || !trackedForwardedRequestMethods.has(method)) {
+    if (!method || requestId == null) {
       return;
     }
 
     pruneExpiredForwardedRequestMethods();
-    forwardedRequestMethodsById.set(String(requestId), {
-      method,
-      createdAt: Date.now(),
-    });
+    if (trackedForwardedRequestMethods.has(method)) {
+      forwardedRequestMethodsById.set(String(requestId), {
+        method,
+        createdAt: Date.now(),
+      });
+    }
+    if (relaySanitizedRequestMethods.has(method)) {
+      relaySanitizedResponseMethodsById.set(String(requestId), {
+        method,
+        createdAt: Date.now(),
+      });
+    }
+  }
+
+  function sanitizeRelayBoundCodexMessage(rawMessage) {
+    pruneExpiredForwardedRequestMethods();
+    const parsed = safeParseJSON(rawMessage);
+    const responseId = parsed?.id;
+    if (responseId == null) {
+      return rawMessage;
+    }
+
+    const trackedRequest = relaySanitizedResponseMethodsById.get(String(responseId));
+    if (!trackedRequest) {
+      return rawMessage;
+    }
+    relaySanitizedResponseMethodsById.delete(String(responseId));
+
+    return sanitizeThreadHistoryImagesForRelay(rawMessage, trackedRequest.method);
   }
 
   function updatePendingAuthLoginFromCodexMessage(rawMessage) {
@@ -654,6 +686,11 @@ function startBridge({
     for (const [requestId, trackedRequest] of forwardedRequestMethodsById.entries()) {
       if (!trackedRequest || (now - trackedRequest.createdAt) >= forwardedRequestMethodTTLms) {
         forwardedRequestMethodsById.delete(requestId);
+      }
+    }
+    for (const [requestId, trackedRequest] of relaySanitizedResponseMethodsById.entries()) {
+      if (!trackedRequest || (now - trackedRequest.createdAt) >= forwardedRequestMethodTTLms) {
+        relaySanitizedResponseMethodsById.delete(requestId);
       }
     }
   }
@@ -1019,6 +1056,124 @@ function safeParseJSON(value) {
   }
 }
 
+function sanitizeThreadHistoryImagesForRelay(rawMessage, requestMethod) {
+  if (requestMethod !== "thread/read" && requestMethod !== "thread/resume") {
+    return rawMessage;
+  }
+
+  const parsed = parseBridgeJSON(rawMessage);
+  const thread = parsed?.result?.thread;
+  if (!thread || typeof thread !== "object" || !Array.isArray(thread.turns)) {
+    return rawMessage;
+  }
+
+  let didSanitize = false;
+  const sanitizedTurns = thread.turns.map((turn) => {
+    if (!turn || typeof turn !== "object" || !Array.isArray(turn.items)) {
+      return turn;
+    }
+
+    let turnDidChange = false;
+    const sanitizedItems = turn.items.map((item) => {
+      if (!item || typeof item !== "object" || !Array.isArray(item.content)) {
+        return item;
+      }
+
+      let itemDidChange = false;
+      const sanitizedContent = item.content.map((contentItem) => {
+        const sanitizedEntry = sanitizeInlineHistoryImageContentItem(contentItem);
+        if (sanitizedEntry !== contentItem) {
+          itemDidChange = true;
+        }
+        return sanitizedEntry;
+      });
+
+      if (!itemDidChange) {
+        return item;
+      }
+
+      turnDidChange = true;
+      return {
+        ...item,
+        content: sanitizedContent,
+      };
+    });
+
+    if (!turnDidChange) {
+      return turn;
+    }
+
+    didSanitize = true;
+    return {
+      ...turn,
+      items: sanitizedItems,
+    };
+  });
+
+  if (!didSanitize) {
+    return rawMessage;
+  }
+
+  return JSON.stringify({
+    ...parsed,
+    result: {
+      ...parsed.result,
+      thread: {
+        ...thread,
+        turns: sanitizedTurns,
+      },
+    },
+  });
+}
+
+function sanitizeInlineHistoryImageContentItem(contentItem) {
+  if (!contentItem || typeof contentItem !== "object") {
+    return contentItem;
+  }
+
+  const normalizedType = normalizeRelayHistoryContentType(contentItem.type);
+  if (normalizedType !== "image" && normalizedType !== "localimage") {
+    return contentItem;
+  }
+
+  const hasInlineUrl = isInlineHistoryImageDataURL(contentItem.url)
+    || isInlineHistoryImageDataURL(contentItem.image_url)
+    || isInlineHistoryImageDataURL(contentItem.path);
+  if (!hasInlineUrl) {
+    return contentItem;
+  }
+
+  const {
+    url: _url,
+    image_url: _imageUrl,
+    path: _path,
+    ...rest
+  } = contentItem;
+
+  return {
+    ...rest,
+    url: RELAY_HISTORY_IMAGE_REFERENCE_URL,
+  };
+}
+
+function normalizeRelayHistoryContentType(value) {
+  return typeof value === "string"
+    ? value.toLowerCase().replace(/[\s_-]+/g, "")
+    : "";
+}
+
+function isInlineHistoryImageDataURL(value) {
+  return typeof value === "string" && value.toLowerCase().startsWith("data:image");
+}
+
+function parseBridgeJSON(value) {
+  try {
+    return JSON.parse(value);
+  } catch {
+    return null;
+  }
+}
+
 function hasRelayConnectionGoneStale(
   lastActivityAt,
   {
@@ -1062,5 +1217,6 @@ function buildHeartbeatBridgeStatus(
 module.exports = {
   buildHeartbeatBridgeStatus,
   hasRelayConnectionGoneStale,
+  sanitizeThreadHistoryImagesForRelay,
   startBridge,
 };
