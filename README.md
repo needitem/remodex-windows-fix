@@ -28,6 +28,8 @@ Global CLI command:
 remodex-windows-fix
 ```
 
+The iPhone app is available on the [App Store](https://apps.apple.com/us/app/remodex-remote-ai-coding/id6760243963).
+
 ## Usage
 
 Start the bridge:
@@ -52,6 +54,15 @@ Watch rollout output:
 
 ```bash
 remodex-windows-fix watch [threadId]
+```
+
+macOS service commands inherited from upstream:
+
+```bash
+remodex-windows-fix start
+remodex-windows-fix restart
+remodex-windows-fix stop
+remodex-windows-fix status
 ```
 
 Get a fresh QR on Windows without stale pairing state:
