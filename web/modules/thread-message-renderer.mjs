@@ -99,8 +99,11 @@ export function renderMessageBubble(element, message, handlers = {}) {
       details.open = true;
       const summaryLine = document.createElement("summary");
       summaryLine.textContent = "Show Exact Diff";
+      const diffBody = document.createElement("div");
+      diffBody.className = "diff-body diff-body-inline";
       const diffShell = buildUnifiedDiffElement(message.patch);
-      details.append(summaryLine, diffShell);
+      diffBody.append(diffShell);
+      details.append(summaryLine, diffBody);
       element.append(details);
     }
     return;

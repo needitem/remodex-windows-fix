@@ -1,4 +1,4 @@
-const CACHE_NAME = "remodex-web-deck-v8";
+const CACHE_NAME = "remodex-web-deck-v10";
 const APP_SHELL_URLS = [
   "/app/",
   "/app/bootstrap.mjs",
@@ -29,6 +29,7 @@ const APP_SHELL_URLS = [
 ];
 
 self.addEventListener("install", (event) => {
+  self.skipWaiting();
   event.waitUntil(
     caches.open(CACHE_NAME).then((cache) => cache.addAll(APP_SHELL_URLS))
   );
@@ -36,12 +37,21 @@ self.addEventListener("install", (event) => {
 
 self.addEventListener("activate", (event) => {
   event.waitUntil(
-    caches.keys().then((keys) => Promise.all(
-      keys
-        .filter((key) => key !== CACHE_NAME)
-        .map((key) => caches.delete(key))
-    ))
+    Promise.all([
+      caches.keys().then((keys) => Promise.all(
+        keys
+          .filter((key) => key !== CACHE_NAME)
+          .map((key) => caches.delete(key))
+      )),
+      self.clients.claim(),
+    ])
   );
+});
+
+self.addEventListener("message", (event) => {
+  if (event.data?.type === "SKIP_WAITING") {
+    self.skipWaiting();
+  }
 });
 
 self.addEventListener("fetch", (event) => {
@@ -50,14 +60,27 @@ self.addEventListener("fetch", (event) => {
     return;
   }
 
+  const shouldPreferNetwork = event.request.mode === "navigate"
+    || event.request.destination === "script"
+    || event.request.destination === "style"
+    || requestUrl.pathname.endsWith(".mjs")
+    || requestUrl.pathname.endsWith(".js")
+    || requestUrl.pathname.endsWith(".css");
+
   event.respondWith(
-    caches.match(event.request).then((cachedResponse) => (
-      cachedResponse
-      || fetch(event.request).then((networkResponse) => {
+    (shouldPreferNetwork
+      ? fetch(event.request).then((networkResponse) => {
         const copy = networkResponse.clone();
         void caches.open(CACHE_NAME).then((cache) => cache.put(event.request, copy));
         return networkResponse;
-      })
-    ))
+      }).catch(() => caches.match(event.request))
+      : caches.match(event.request).then((cachedResponse) => (
+        cachedResponse
+        || fetch(event.request).then((networkResponse) => {
+          const copy = networkResponse.clone();
+          void caches.open(CACHE_NAME).then((cache) => cache.put(event.request, copy));
+          return networkResponse;
+        })
+      )))
   );
 });

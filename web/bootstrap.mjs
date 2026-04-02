@@ -1,6 +1,6 @@
-const APP_VERSION = "20260402b";
+const APP_VERSION = "20260402d";
 const CLEANUP_MARKER = `remodex-web.bootstrap-cleanup.${APP_VERSION}`;
-const CURRENT_SW_MARKER = "/app/sw.mjs";
+const CURRENT_SW_PATH = "/app/sw.mjs";
 
 const needsReload = await cleanupLegacyAppShell();
 if (!needsReload) {
@@ -24,7 +24,7 @@ async function cleanupLegacyAppShell() {
         || registration.waiting?.scriptURL
         || registration.installing?.scriptURL
         || "";
-      return !scriptUrl.includes(CURRENT_SW_MARKER);
+      return !isCurrentAppServiceWorkerScript(scriptUrl);
     });
     hadLegacyRegistration = appRegistrations.length > 0;
     await Promise.all(appRegistrations.map((registration) => registration.unregister()));
@@ -40,6 +40,19 @@ async function cleanupLegacyAppShell() {
   } catch {}
 
   return false;
+}
+
+function isCurrentAppServiceWorkerScript(scriptUrl) {
+  if (!scriptUrl) {
+    return false;
+  }
+
+  try {
+    const parsedUrl = new URL(scriptUrl, window.location.origin);
+    return parsedUrl.pathname === CURRENT_SW_PATH && parsedUrl.searchParams.get("v") === APP_VERSION;
+  } catch {
+    return scriptUrl.includes(`${CURRENT_SW_PATH}?v=${APP_VERSION}`);
+  }
 }
 
 async function registerAppShellServiceWorker() {
