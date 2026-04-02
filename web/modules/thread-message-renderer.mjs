@@ -115,9 +115,19 @@ export function buildUnifiedDiffElement(patch) {
   const lines = normalizedPatch.replace(/\r/g, "").split("\n");
 
   for (const line of lines) {
+    const parts = describeDiffLine(line);
     const row = document.createElement("div");
-    row.className = `diff-line ${diffLineClass(line)}`.trim();
-    row.textContent = line || " ";
+    row.className = `diff-line ${parts.className}`.trim();
+
+    const prefix = document.createElement("span");
+    prefix.className = "diff-line-prefix";
+    prefix.textContent = parts.prefix;
+
+    const text = document.createElement("span");
+    text.className = "diff-line-text";
+    text.textContent = parts.text;
+
+    row.append(prefix, text);
     fragment.append(row);
   }
 
@@ -467,6 +477,80 @@ function diffLineClass(line) {
     return "diff-line-remove";
   }
   return "diff-line-context";
+}
+
+function describeDiffLine(line) {
+  const className = diffLineClass(line);
+
+  if (line.startsWith("diff --git ")) {
+    return {
+      className,
+      prefix: "file",
+      text: line.replace(/^diff --git\s+/, "") || " ",
+    };
+  }
+
+  if (line.startsWith("index ")) {
+    return {
+      className,
+      prefix: "idx",
+      text: line.replace(/^index\s+/, "") || " ",
+    };
+  }
+
+  if (line.startsWith("@@")) {
+    return {
+      className,
+      prefix: "@@",
+      text: line,
+    };
+  }
+
+  if (line.startsWith("+++ ")) {
+    return {
+      className,
+      prefix: "++",
+      text: line.slice(4) || " ",
+    };
+  }
+
+  if (line.startsWith("--- ")) {
+    return {
+      className,
+      prefix: "--",
+      text: line.slice(4) || " ",
+    };
+  }
+
+  if (line.startsWith("+")) {
+    return {
+      className,
+      prefix: "+",
+      text: line.slice(1) || " ",
+    };
+  }
+
+  if (line.startsWith("-")) {
+    return {
+      className,
+      prefix: "-",
+      text: line.slice(1) || " ",
+    };
+  }
+
+  if (line.startsWith(" ")) {
+    return {
+      className,
+      prefix: " ",
+      text: line.slice(1) || " ",
+    };
+  }
+
+  return {
+    className,
+    prefix: " ",
+    text: line || " ",
+  };
 }
 
 function cssEscape(value) {
