@@ -4,6 +4,10 @@ import {
   shouldAutoScrollMessageList,
 } from "./modules/conversation-render-state.mjs";
 import {
+  expandConversationWindow,
+  resolveConversationWindowState,
+} from "./modules/conversation-window-state.mjs";
+import {
   createAnimationFrameBatcher,
   createDeferredStorageWriter,
 } from "./modules/ui-work-batching.mjs";
@@ -117,6 +121,7 @@ const state = {
     reasoningOptions: REASONING_OPTIONS,
     speedOptions: SPEED_OPTIONS,
   }),
+  messageWindowStartByChatId: {},
   rateLimitSummary: "Usage: Unknown",
   relayOverride: loadStoredRelayOverride(),
   searchQuery: "",
@@ -130,12 +135,14 @@ const state = {
 const elements = mapElements();
 let refreshTimer = 0;
 let searchRenderTimer = 0;
+let messageListScrollFrame = 0;
 let scanner = null;
 let bridgeClientModule = null;
 let bridgeClientModulePromise = null;
 const patchRefreshTimers = new Map();
 let richMessageRendererModule = null;
 let richMessageRendererPromise = null;
+let messageWindowExpansionInProgress = false;
 const conversationRenderBatcher = createAnimationFrameBatcher(() => {
   renderConversation();
 }, {
@@ -152,6 +159,7 @@ const threadCacheWriter = createDeferredStorageWriter(() => {
 });
 let persistedLastThreadId = state.selectedChatId || null;
 const modalFocusRestore = new WeakMap();
+const MESSAGE_WINDOW_AUTOLOAD_THRESHOLD_PX = 160;
 const swipeGesture = {
   active: false,
   chatId: "",
@@ -440,6 +448,7 @@ function wireEvents() {
   elements.closeBranchButton?.addEventListener("click", closeBranchSheet);
   elements.branchCancelButton?.addEventListener("click", closeBranchSheet);
   elements.sendButton.addEventListener("click", sendMessage);
+  elements.messageList.addEventListener("scroll", handleMessageListScroll, { passive: true });
   elements.threadDiffButton.addEventListener("click", () => { void openDiff(); });
   elements.refreshDiffButton.addEventListener("click", () => { void refreshDiffForSelectedChat(); });
   elements.closeDiffButton.addEventListener("click", closeDiff);
@@ -647,8 +656,9 @@ function renderConversation() {
   elements.accessSelect.value = chat.access;
   persistLastThreadId(chat.id);
 
+  const conversationWindow = currentConversationWindow(chat);
   const previousRenderState = captureConversationRenderState(chat.id);
-  syncConversationMessageCards(chat);
+  syncConversationMessageCards(chat, conversationWindow);
   if (chatNeedsRichMessageRenderer(chat) && !richMessageRendererModule) {
     void ensureRichMessageRenderer().then(() => {
       if (selectedChat()?.id === chat.id) {
@@ -661,7 +671,7 @@ function renderConversation() {
   if (shouldAutoScrollMessageList({
     nextLastMessageId: lastMessage?.id || "",
     nextLastRenderKey: lastMessage ? buildMessageRenderKey(lastMessage) : "",
-    nextMessageCount: chat.messages.length,
+    nextMessageCount: conversationWindow.visibleCount,
     previousLastMessageId: previousRenderState.lastMessageId,
     previousLastRenderKey: previousRenderState.lastRenderKey,
     previousMessageCount: previousRenderState.messageCount,
@@ -732,6 +742,66 @@ function queueChatPersistenceAndRender(chat) {
 
 function flushPendingThreadCacheWrite() {
   threadCacheWriter.flush();
+}
+
+function currentConversationWindow(chat) {
+  const chatId = String(chat?.id || "");
+  const conversationWindow = resolveConversationWindowState({
+    requestedStartIndex: state.messageWindowStartByChatId[chatId],
+    totalMessages: chat?.messages?.length || 0,
+  });
+
+  if (conversationWindow.mode === "tail") {
+    delete state.messageWindowStartByChatId[chatId];
+  }
+
+  return conversationWindow;
+}
+
+function handleMessageListScroll() {
+  if (messageWindowExpansionInProgress || messageListScrollFrame) {
+    return;
+  }
+
+  if (elements.messageList.scrollTop > MESSAGE_WINDOW_AUTOLOAD_THRESHOLD_PX) {
+    return;
+  }
+
+  messageListScrollFrame = window.requestAnimationFrame(() => {
+    messageListScrollFrame = 0;
+    maybeExpandConversationWindowFromScroll();
+  });
+}
+
+function maybeExpandConversationWindowFromScroll() {
+  const chat = selectedChat();
+  if (!chat || messageWindowExpansionInProgress) {
+    return;
+  }
+
+  const conversationWindow = currentConversationWindow(chat);
+  if (!conversationWindow.hiddenCount || elements.messageList.scrollTop > MESSAGE_WINDOW_AUTOLOAD_THRESHOLD_PX) {
+    return;
+  }
+
+  const previousScrollHeight = elements.messageList.scrollHeight;
+  const previousScrollTop = elements.messageList.scrollTop;
+  const nextStartIndex = expandConversationWindow({
+    requestedStartIndex: state.messageWindowStartByChatId[chat.id],
+    totalMessages: chat.messages.length,
+  });
+  if (nextStartIndex === conversationWindow.startIndex) {
+    return;
+  }
+
+  messageWindowExpansionInProgress = true;
+  try {
+    state.messageWindowStartByChatId[chat.id] = nextStartIndex;
+    renderConversationNow();
+    elements.messageList.scrollTop = Math.max(0, previousScrollTop + (elements.messageList.scrollHeight - previousScrollHeight));
+  } finally {
+    messageWindowExpansionInProgress = false;
+  }
 }
 
 function syncSidebarSelection(previousSelectedChatId, nextSelectedChatId) {
@@ -955,13 +1025,14 @@ function captureConversationRenderState(chatId) {
   };
 }
 
-function syncConversationMessageCards(chat) {
+function syncConversationMessageCards(chat, conversationWindow = currentConversationWindow(chat)) {
+  const messageEntries = buildConversationMessageEntries(chat, conversationWindow);
   if (String(elements.messageList.dataset.chatId || "") !== String(chat.id || "")) {
     elements.messageList.replaceChildren();
     elements.messageList.dataset.chatId = String(chat.id || "");
   }
 
-  if (trySyncConversationMessageCardsInOrder(chat)) {
+  if (trySyncConversationMessageCardsInOrder(messageEntries)) {
     return;
   }
 
@@ -973,9 +1044,8 @@ function syncConversationMessageCards(chat) {
   }
 
   let insertionCursor = elements.messageList.firstElementChild;
-  for (let index = 0; index < chat.messages.length; index += 1) {
-    const message = chat.messages[index];
-    const messageId = String(message?.id || `${message?.role || "assistant"}:${index}`);
+  for (const { absoluteIndex, message } of messageEntries) {
+    const messageId = String(message?.id || `${message?.role || "assistant"}:${absoluteIndex}`);
     const renderKey = buildMessageRenderKey(message);
     let card = existingCardsById.get(messageId) || null;
 
@@ -998,9 +1068,16 @@ function syncConversationMessageCards(chat) {
   }
 }
 
-function trySyncConversationMessageCardsInOrder(chat) {
+function buildConversationMessageEntries(chat, conversationWindow) {
+  return chat.messages.slice(conversationWindow.startIndex).map((message, visibleIndex) => ({
+    absoluteIndex: conversationWindow.startIndex + visibleIndex,
+    message,
+  }));
+}
+
+function trySyncConversationMessageCardsInOrder(messageEntries) {
   const existingCount = elements.messageList.childElementCount;
-  if (existingCount > chat.messages.length) {
+  if (existingCount > messageEntries.length) {
     return false;
   }
 
@@ -1010,8 +1087,8 @@ function trySyncConversationMessageCardsInOrder(chat) {
       return false;
     }
 
-    const message = chat.messages[index];
-    const messageId = String(message?.id || `${message?.role || "assistant"}:${index}`);
+    const { absoluteIndex, message } = messageEntries[index];
+    const messageId = String(message?.id || `${message?.role || "assistant"}:${absoluteIndex}`);
     if (card.dataset.messageId !== messageId) {
       return false;
     }
@@ -1019,9 +1096,9 @@ function trySyncConversationMessageCardsInOrder(chat) {
     updateMessageCard(card, message, messageId, buildMessageRenderKey(message));
   }
 
-  for (let index = existingCount; index < chat.messages.length; index += 1) {
-    const message = chat.messages[index];
-    const messageId = String(message?.id || `${message?.role || "assistant"}:${index}`);
+  for (let index = existingCount; index < messageEntries.length; index += 1) {
+    const { absoluteIndex, message } = messageEntries[index];
+    const messageId = String(message?.id || `${message?.role || "assistant"}:${absoluteIndex}`);
     elements.messageList.append(createMessageCard(message, messageId, buildMessageRenderKey(message)));
   }
 
