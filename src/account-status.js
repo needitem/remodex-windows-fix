@@ -11,6 +11,7 @@ function composeAccountStatus({
   authStatus = null,
   loginInFlight = false,
   bridgeVersionInfo = null,
+  transportMode = null,
 } = {}) {
   const account = accountRead?.account || null;
   const authToken = normalizeString(authStatus?.authToken);
@@ -43,6 +44,7 @@ function composeAccountStatus({
       normalizeString(bridgePackageVersion),
     ]) || null,
     bridgeLatestVersion: normalizeString(bridgeVersionInfo?.bridgeLatestVersion) || null,
+    codexTransportMode: normalizeString(transportMode) || null,
   };
 }
 
@@ -52,6 +54,7 @@ function redactAuthStatus(authStatus = null, extras = {}) {
     authStatus,
     loginInFlight: Boolean(extras.loginInFlight),
     bridgeVersionInfo: extras.bridgeVersionInfo || null,
+    transportMode: extras.transportMode || null,
   });
 
   return {
@@ -65,6 +68,7 @@ function redactAuthStatus(authStatus = null, extras = {}) {
     expiresAt: composed.expiresAt,
     bridgeVersion: composed.bridgeVersion,
     bridgeLatestVersion: composed.bridgeLatestVersion,
+    codexTransportMode: composed.codexTransportMode,
   };
 }
 
@@ -73,6 +77,7 @@ function composeSanitizedAuthStatusFromSettledResults({
   authStatusResult = null,
   loginInFlight = false,
   bridgeVersionInfo = null,
+  transportMode = null,
 } = {}) {
   const accountRead = accountReadResult?.status === "fulfilled" ? accountReadResult.value : null;
   const authStatus = authStatusResult?.status === "fulfilled" ? authStatusResult.value : null;
@@ -87,6 +92,7 @@ function composeSanitizedAuthStatusFromSettledResults({
     accountRead,
     loginInFlight: Boolean(loginInFlight),
     bridgeVersionInfo,
+    transportMode,
   });
 }
 

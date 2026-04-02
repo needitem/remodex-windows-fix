@@ -4,9 +4,7 @@
 // Exports: createVoiceHandler, resolveVoiceAuth
 // Depends on: global fetch/FormData/Blob, local codex app-server auth via sendCodexRequest
 
-const OPENAI_TRANSCRIPTIONS_URL = "https://api.openai.com/v1/audio/transcriptions";
 const CHATGPT_TRANSCRIPTIONS_URL = "https://chatgpt.com/backend-api/transcribe";
-const DEFAULT_TRANSCRIPTION_MODEL = "gpt-4o-mini-transcribe";
 const MAX_AUDIO_BYTES = 10 * 1024 * 1024;
 const MAX_DURATION_MS = 60_000;
 
@@ -122,9 +120,6 @@ async function requestTranscription({
   const makeAttempt = async (activeAuthContext) => {
     const formData = new FormDataImpl();
     formData.append("file", new BlobImpl([audioBuffer], { type: mimeType }), "voice.wav");
-    if (!activeAuthContext.isChatGPT) {
-      formData.append("model", DEFAULT_TRANSCRIPTION_MODEL);
-    }
 
     return fetchImpl(activeAuthContext.transcriptionURL, {
       method: "POST",
@@ -177,16 +172,20 @@ async function loadAuthContext(sendCodexRequest) {
 
   const authMethod = readString(authStatus?.authMethod);
   const token = readString(authStatus?.authToken);
-  if (!authMethod || !token) {
+  const isChatGPT = authMethod === "chatgpt" || authMethod === "chatgptAuthTokens";
+
+  if (!token) {
     throw voiceError("not_authenticated", "Sign in with ChatGPT before using voice transcription.");
   }
+  if (!isChatGPT) {
+    throw voiceError("not_chatgpt", "Voice transcription requires a ChatGPT account.");
+  }
 
-  const isChatGPT = authMethod === "chatgpt" || authMethod === "chatgptAuthTokens";
   return {
     authMethod,
     token,
     isChatGPT,
-    transcriptionURL: isChatGPT ? CHATGPT_TRANSCRIPTIONS_URL : OPENAI_TRANSCRIPTIONS_URL,
+    transcriptionURL: CHATGPT_TRANSCRIPTIONS_URL,
     chatgptAccountId: readChatGPTAccountIdFromToken(token),
   };
 }

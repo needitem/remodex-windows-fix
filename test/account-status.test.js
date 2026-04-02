@@ -31,6 +31,7 @@ test("composeSanitizedAuthStatusFromSettledResults keeps explicit account login 
       reason: new Error("offline"),
     },
     loginInFlight: false,
+    transportMode: "spawn",
   });
 
   assert.deepEqual(snapshot, {
@@ -44,6 +45,7 @@ test("composeSanitizedAuthStatusFromSettledResults keeps explicit account login 
     expiresAt: null,
     bridgeVersion: packageVersion,
     bridgeLatestVersion: null,
+    codexTransportMode: "spawn",
   });
 });
 
