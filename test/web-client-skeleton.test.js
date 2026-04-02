@@ -761,6 +761,109 @@ test("browser bridge client keeps retrying while waiting for the Mac bridge to r
   }
 });
 
+test("browser bridge client does not reconnect after being replaced by a newer client", async () => {
+  const storage = createMemoryStorage();
+  const macIdentity = createOkpKeyPair("ed25519");
+  const macEphemeral = createOkpKeyPair("x25519");
+  const previousWindow = globalThis.window;
+  const previousLocalStorage = globalThis.localStorage;
+  const previousWebSocket = globalThis.WebSocket;
+  const previousSetTimeout = globalThis.setTimeout;
+  const previousClearTimeout = globalThis.clearTimeout;
+  const fastSetTimeout = (callback, delay = 0, ...args) => previousSetTimeout(callback, Math.min(delay, 40), ...args);
+  let firstSocket = null;
+  let socketSequence = 0;
+
+  globalThis.setTimeout = fastSetTimeout;
+  globalThis.clearTimeout = previousClearTimeout;
+  globalThis.window = {
+    clearTimeout: previousClearTimeout,
+    setTimeout: fastSetTimeout,
+  };
+  globalThis.localStorage = storage;
+
+  try {
+    const {
+      buildTranscriptBytes,
+      nonceForDirection,
+    } = await import(`../web/modules/browser-secure-transport.mjs?case=replaced-${Date.now()}`);
+    const { createBrowserBridgeClient } = await import(`../web/modules/browser-bridge-client.mjs?case=replaced-${Date.now()}`);
+    const relayServer = createFakeBrowserRelayServer({
+      buildTranscriptBytes,
+      macEphemeral,
+      macIdentity,
+      nonceForDirection,
+      scheduleTask: previousSetTimeout,
+    });
+
+    globalThis.WebSocket = class FakeWebSocket {
+      static CONNECTING = 0;
+      static OPEN = 1;
+      static CLOSING = 2;
+      static CLOSED = 3;
+
+      constructor(url) {
+        this.url = url;
+        this.readyState = FakeWebSocket.CONNECTING;
+        this.listeners = new Map();
+        this.sequence = ++socketSequence;
+        if (!firstSocket) {
+          firstSocket = this;
+        }
+
+        previousSetTimeout(() => {
+          this.readyState = FakeWebSocket.OPEN;
+          this.dispatch("open", {});
+        }, 0);
+      }
+
+      addEventListener(type, handler) {
+        const handlers = this.listeners.get(type) || [];
+        handlers.push(handler);
+        this.listeners.set(type, handlers);
+      }
+
+      send(message) {
+        relayServer.handleOutgoing(this, String(message));
+      }
+
+      close(code = 1000, reason = "") {
+        this.readyState = FakeWebSocket.CLOSED;
+        this.dispatch("close", { code, reason });
+      }
+
+      dispatch(type, event) {
+        for (const handler of this.listeners.get(type) || []) {
+          handler(event);
+        }
+      }
+    };
+
+    const client = createBrowserBridgeClient({
+      pairingPayload: {
+        sessionId: "session-1",
+        relay: "wss://relay.example/relay",
+        macDeviceId: "mac-1",
+        macIdentityPublicKey: macIdentity.publicKey,
+      },
+    });
+
+    await client.connect();
+    assert.equal(socketSequence, 1);
+
+    firstSocket.close(1000, "Replaced by newer iPhone connection");
+    await new Promise((resolve) => previousSetTimeout(resolve, 120));
+
+    assert.equal(socketSequence, 1);
+  } finally {
+    globalThis.window = previousWindow;
+    globalThis.localStorage = previousLocalStorage;
+    globalThis.WebSocket = previousWebSocket;
+    globalThis.setTimeout = previousSetTimeout;
+    globalThis.clearTimeout = previousClearTimeout;
+  }
+});
+
 test("browser bridge client ignores stale socket events after a newer reconnect starts", async () => {
   const storage = createMemoryStorage();
   const macIdentity = createOkpKeyPair("ed25519");

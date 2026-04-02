@@ -1,6 +1,11 @@
 import { inferRelayBaseUrl } from "./modules/browser-relay-client.mjs";
 import { createBrowserBridgeClient } from "./modules/browser-bridge-client.mjs";
 import {
+  buildMessageRenderKey,
+  isScrolledNearBottom,
+  shouldAutoScrollMessageList,
+} from "./modules/conversation-render-state.mjs";
+import {
   describeBrowserNotificationPermission,
   getBrowserNotificationState,
   requestBrowserNotificationPermission,
@@ -21,7 +26,6 @@ import {
 } from "./modules/storage.mjs";
 import { ACCESS_OPTIONS, MODEL_OPTIONS, REASONING_OPTIONS, REPOSITORY_BRANCHES, SPEED_OPTIONS } from "./modules/mock-data.mjs";
 import { loadPreferences, savePreferences } from "./modules/preferences.mjs";
-import { createScannerController } from "./modules/scanner-controller.mjs";
 import { describeMobileDockState } from "./modules/mobile-dock-state.mjs";
 import {
   approvalPolicyForAccess,
@@ -121,8 +125,9 @@ const state = {
 };
 
 const elements = mapElements();
-const scanner = createScannerController({ videoElement: elements.scannerVideo });
 let refreshTimer = 0;
+let searchRenderTimer = 0;
+let scanner = null;
 const patchRefreshTimers = new Map();
 const modalFocusRestore = new WeakMap();
 const swipeGesture = {
@@ -254,7 +259,10 @@ function mapElements() {
 }
 
 function wireEvents() {
-  elements.searchInput.addEventListener("input", (event) => { state.searchQuery = event.target.value.trim().toLowerCase(); renderSidebar(); });
+  elements.searchInput.addEventListener("input", (event) => {
+    state.searchQuery = event.target.value.trim().toLowerCase();
+    scheduleSidebarRender();
+  });
   elements.newChatButton.addEventListener("click", () => { void createChat(); });
   elements.mobileDeckButton?.addEventListener("click", () => {
     pulseHaptic(8);
@@ -460,6 +468,7 @@ function renderConversation() {
   renderComposerState(chat);
   elements.messageList.setAttribute("aria-busy", chatHasPendingTurn(chat) ? "true" : "false");
   if (!chat) {
+    elements.messageList.dataset.chatId = "";
     elements.threadRepoLabel.textContent = "Remodex";
     elements.threadTitle.textContent = "No thread selected";
     elements.threadSubtitle.textContent = "Connect the relay and pick a real thread from the chat list.";
@@ -485,25 +494,22 @@ function renderConversation() {
   elements.accessSelect.value = chat.access;
   persistLastThreadId(chat.id);
 
-  const fragment = document.createDocumentFragment();
-  for (const message of chat.messages) {
-    const card = document.createElement("article");
-    const originClass = `message-origin-${message.origin || "unknown"}`;
-    const kindClass = message.kind ? `message-kind-${message.kind}` : "";
-    const pendingClass = message.pending ? "is-pending" : "";
-    card.className = `message-card ${message.role === "user" ? "user" : "assistant"} ${originClass} ${kindClass} ${pendingClass}`.trim();
-    card.innerHTML = `<div class="message-meta"><span>${escapeHTML(message.author)}</span><span>|</span><span>${escapeHTML(message.time)}</span><span class="message-origin-badge ${originBadgeClass(message.origin)}">${escapeHTML(originBadgeLabel(message.origin))}</span></div><div class="message-bubble"></div>`;
-    renderMessageBubble(card.querySelector(".message-bubble"), message, {
-      buildCommandPreview,
-      buildCommandRawContent,
-      onSubmitApproval: submitApprovalDecision,
-      onSubmitStructuredInput: submitStructuredUserInputResponse,
-      summarizeCommandForDisplay,
-    });
-    fragment.append(card);
+  const previousRenderState = captureConversationRenderState(chat.id);
+  syncConversationMessageCards(chat);
+
+  const lastMessage = chat.messages[chat.messages.length - 1] || null;
+  if (shouldAutoScrollMessageList({
+    nextLastMessageId: lastMessage?.id || "",
+    nextLastRenderKey: lastMessage ? buildMessageRenderKey(lastMessage) : "",
+    nextMessageCount: chat.messages.length,
+    previousLastMessageId: previousRenderState.lastMessageId,
+    previousLastRenderKey: previousRenderState.lastRenderKey,
+    previousMessageCount: previousRenderState.messageCount,
+    selectedChatChanged: previousRenderState.selectedChatChanged,
+    wasNearBottom: previousRenderState.wasNearBottom,
+  })) {
+    scrollConversationToBottom();
   }
-  elements.messageList.replaceChildren(fragment);
-  scrollConversationToBottom();
 }
 
 function renderPairing() {
@@ -534,6 +540,102 @@ function renderConnection() {
   renderDeckSummary();
   renderThreadSpotlight(selectedChat());
   renderDiffViewer();
+}
+
+function scheduleSidebarRender() {
+  window.clearTimeout(searchRenderTimer);
+  searchRenderTimer = window.setTimeout(() => {
+    searchRenderTimer = 0;
+    renderSidebar();
+  }, 120);
+}
+
+function captureConversationRenderState(chatId) {
+  const lastCard = elements.messageList.lastElementChild;
+  return {
+    lastMessageId: lastCard?.dataset?.messageId || "",
+    lastRenderKey: lastCard?.__remodexRenderKey || "",
+    messageCount: elements.messageList.childElementCount,
+    selectedChatChanged: String(elements.messageList.dataset.chatId || "") !== String(chatId || ""),
+    wasNearBottom: isScrolledNearBottom(elements.messageList),
+  };
+}
+
+function syncConversationMessageCards(chat) {
+  if (String(elements.messageList.dataset.chatId || "") !== String(chat.id || "")) {
+    elements.messageList.replaceChildren();
+    elements.messageList.dataset.chatId = String(chat.id || "");
+  }
+
+  const existingCardsById = new Map();
+  for (const child of Array.from(elements.messageList.children)) {
+    if (child instanceof HTMLElement && child.dataset.messageId) {
+      existingCardsById.set(child.dataset.messageId, child);
+    }
+  }
+
+  let insertionCursor = elements.messageList.firstElementChild;
+  for (let index = 0; index < chat.messages.length; index += 1) {
+    const message = chat.messages[index];
+    const messageId = String(message?.id || `${message?.role || "assistant"}:${index}`);
+    const renderKey = buildMessageRenderKey(message);
+    let card = existingCardsById.get(messageId) || null;
+
+    if (!card) {
+      card = createMessageCard(message, messageId, renderKey);
+      elements.messageList.insertBefore(card, insertionCursor);
+    } else {
+      existingCardsById.delete(messageId);
+      if (card !== insertionCursor) {
+        elements.messageList.insertBefore(card, insertionCursor);
+      }
+      updateMessageCard(card, message, messageId, renderKey);
+    }
+
+    insertionCursor = card.nextElementSibling;
+  }
+
+  for (const staleCard of existingCardsById.values()) {
+    staleCard.remove();
+  }
+}
+
+function createMessageCard(message, messageId, renderKey) {
+  const card = document.createElement("article");
+  updateMessageCard(card, message, messageId, renderKey);
+  return card;
+}
+
+function updateMessageCard(card, message, messageId, renderKey) {
+  const nextClassName = [
+    "message-card",
+    message?.role === "user" ? "user" : "assistant",
+    `message-origin-${message?.origin || "unknown"}`,
+    message?.kind ? `message-kind-${message.kind}` : "",
+    message?.pending ? "is-pending" : "",
+  ].filter(Boolean).join(" ");
+
+  if (card.className !== nextClassName) {
+    card.className = nextClassName;
+  }
+
+  if (card.dataset.messageId !== messageId) {
+    card.dataset.messageId = messageId;
+  }
+
+  if (card.__remodexRenderKey === renderKey) {
+    return;
+  }
+
+  card.__remodexRenderKey = renderKey;
+  card.innerHTML = `<div class="message-meta"><span>${escapeHTML(message.author)}</span><span>|</span><span>${escapeHTML(message.time)}</span><span class="message-origin-badge ${originBadgeClass(message.origin)}">${escapeHTML(originBadgeLabel(message.origin))}</span></div><div class="message-bubble"></div>`;
+  renderMessageBubble(card.querySelector(".message-bubble"), message, {
+    buildCommandPreview,
+    buildCommandRawContent,
+    onSubmitApproval: submitApprovalDecision,
+    onSubmitStructuredInput: submitStructuredUserInputResponse,
+    summarizeCommandForDisplay,
+  });
 }
 
 function renderAppChrome() {
@@ -982,7 +1084,7 @@ function openScanner() {
 }
 
 function closeScanner() {
-  scanner.stop();
+  scanner?.stop();
   closeModal(elements.scannerModal);
   renderAppChrome();
 }
@@ -1177,8 +1279,9 @@ async function startScanner() {
 
   setScannerStatus("Requesting camera permission...");
   try {
-    scanner.stop();
-    await scanner.start({
+    const scannerController = await getScannerController();
+    scannerController.stop();
+    await scannerController.start({
       async onDetect(rawValue) {
         try {
           setScannerStatus("QR detected. Loading pairing...");
@@ -1190,8 +1293,18 @@ async function startScanner() {
         } catch (error) {
           setScannerStatus(error.message || "Failed to connect after scanning.");
           addLog("error", error.message || "Failed to connect after scanning.", "scanner");
-          renderLogs();
-        }
+  renderLogs();
+}
+
+async function getScannerController() {
+  if (scanner) {
+    return scanner;
+  }
+
+  const { createScannerController } = await import("./modules/scanner-controller.mjs");
+  scanner = createScannerController({ videoElement: elements.scannerVideo });
+  return scanner;
+}
       },
       onError(error) {
         setScannerStatus(error.message || "Camera scan failed.");
@@ -1312,7 +1425,7 @@ async function applyPairing(payload, note, { autoConnect = false } = {}) {
   if (autoConnect) {
     await connectRelay();
     if (state.connection.status === "ready") {
-      scanner.stop();
+      scanner?.stop();
       closeModal(elements.scannerModal);
     }
   }
@@ -3472,7 +3585,6 @@ function scrollConversationToBottom() {
 
   scrollToBottom();
   window.requestAnimationFrame(scrollToBottom);
-  window.setTimeout(scrollToBottom, 40);
 }
 
 function truncate(value, maxLength) {

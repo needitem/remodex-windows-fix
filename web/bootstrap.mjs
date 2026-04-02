@@ -1,6 +1,8 @@
-const APP_VERSION = "20260402d";
+const APP_VERSION = "20260402f";
 const CLEANUP_MARKER = `remodex-web.bootstrap-cleanup.${APP_VERSION}`;
 const CURRENT_SW_PATH = "/app/sw.mjs";
+
+globalThis.__REMODEX_APP_VERSION__ = APP_VERSION;
 
 const needsReload = await cleanupLegacyAppShell();
 if (!needsReload) {

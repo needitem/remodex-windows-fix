@@ -1,5 +1,3 @@
-import { decodePairingPayloadTextFromImageFile } from "./qr-decoder.mjs";
-
 const REQUIRED_PAIRING_KEYS = [
   "v",
   "relay",
@@ -52,6 +50,7 @@ export async function decodePairingPayloadFromFile(file, windowLike = window) {
 }
 
 export async function decodePairingPayloadFromImage(file, windowLike = window) {
+  const { decodePairingPayloadTextFromImageFile } = await import("./qr-decoder.mjs");
   const decodedPayloadText = await decodePairingPayloadTextFromImageFile(file, { windowLike });
   if (!decodedPayloadText) {
     throw new Error("No QR code was found in the selected image.");

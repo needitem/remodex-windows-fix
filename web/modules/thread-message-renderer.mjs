@@ -113,14 +113,20 @@ export function renderMessageBubble(element, message, handlers = {}) {
 }
 
 export function buildUnifiedDiffElement(patch) {
-  const normalizedPatch = String(patch || "");
   const fragment = document.createDocumentFragment();
-  const lines = normalizedPatch.replace(/\r/g, "").split("\n");
+  const rows = buildUnifiedDiffRows(patch);
 
-  for (const line of lines) {
-    const parts = describeDiffLine(line);
+  for (const parts of rows) {
     const row = document.createElement("div");
     row.className = `diff-line ${parts.className}`.trim();
+
+    const oldLine = document.createElement("span");
+    oldLine.className = "diff-line-number diff-line-number-old";
+    oldLine.textContent = parts.oldLineNumber;
+
+    const newLine = document.createElement("span");
+    newLine.className = "diff-line-number diff-line-number-new";
+    newLine.textContent = parts.newLineNumber;
 
     const prefix = document.createElement("span");
     prefix.className = "diff-line-prefix";
@@ -130,7 +136,7 @@ export function buildUnifiedDiffElement(patch) {
     text.className = "diff-line-text";
     text.textContent = parts.text;
 
-    row.append(prefix, text);
+    row.append(oldLine, newLine, prefix, text);
     fragment.append(row);
   }
 
@@ -138,6 +144,65 @@ export function buildUnifiedDiffElement(patch) {
   shell.className = "diff-lines";
   shell.append(fragment);
   return shell;
+}
+
+export function buildUnifiedDiffRows(patch) {
+  const normalizedPatch = String(patch || "");
+  const lines = normalizedPatch.replace(/\r/g, "").split("\n");
+  const rows = [];
+  let currentOldLine = null;
+  let currentNewLine = null;
+
+  for (const line of lines) {
+    const parts = describeDiffLine(line);
+    const row = {
+      ...parts,
+      newLineNumber: "",
+      oldLineNumber: "",
+    };
+
+    if (line.startsWith("@@")) {
+      const hunkRange = parseUnifiedDiffHunkHeader(line);
+      if (hunkRange) {
+        currentOldLine = hunkRange.oldStart;
+        currentNewLine = hunkRange.newStart;
+      }
+      rows.push(row);
+      continue;
+    }
+
+    if (line.startsWith("diff --git ")
+      || line.startsWith("index ")
+      || line.startsWith("--- ")
+      || line.startsWith("+++ ")
+      || line.startsWith("\\")
+    ) {
+      rows.push(row);
+      continue;
+    }
+
+    if (line.startsWith("+")) {
+      row.newLineNumber = formatDiffLineNumber(currentNewLine);
+      currentNewLine = incrementDiffLineNumber(currentNewLine);
+      rows.push(row);
+      continue;
+    }
+
+    if (line.startsWith("-")) {
+      row.oldLineNumber = formatDiffLineNumber(currentOldLine);
+      currentOldLine = incrementDiffLineNumber(currentOldLine);
+      rows.push(row);
+      continue;
+    }
+
+    row.oldLineNumber = formatDiffLineNumber(currentOldLine);
+    row.newLineNumber = formatDiffLineNumber(currentNewLine);
+    currentOldLine = incrementDiffLineNumber(currentOldLine);
+    currentNewLine = incrementDiffLineNumber(currentNewLine);
+    rows.push(row);
+  }
+
+  return rows;
 }
 
 export function summarizePatchForDisplay(patch) {
@@ -554,6 +619,26 @@ function describeDiffLine(line) {
     prefix: " ",
     text: line || " ",
   };
+}
+
+function parseUnifiedDiffHunkHeader(line) {
+  const match = /^@@ -(\d+)(?:,\d+)? \+(\d+)(?:,\d+)? @@/.exec(String(line || ""));
+  if (!match) {
+    return null;
+  }
+
+  return {
+    oldStart: Number(match[1]),
+    newStart: Number(match[2]),
+  };
+}
+
+function formatDiffLineNumber(value) {
+  return Number.isFinite(value) && value > 0 ? String(value) : "";
+}
+
+function incrementDiffLineNumber(value) {
+  return Number.isFinite(value) ? value + 1 : value;
 }
 
 function cssEscape(value) {

@@ -1,5 +1,3 @@
-import { decodePairingPayloadTextFromVideo } from "./qr-decoder.mjs";
-
 export function createScannerController({
   navigatorLike = navigator,
   videoElement,
@@ -7,6 +5,7 @@ export function createScannerController({
 } = {}) {
   const state = {
     canvas: null,
+    decodeVideo: null,
     rafId: 0,
     stream: null,
   };
@@ -49,6 +48,7 @@ export function createScannerController({
 
     try {
       if (videoElement.readyState >= 2) {
+        const decodePairingPayloadTextFromVideo = await loadVideoDecoder();
         const rawValue = await decodePairingPayloadTextFromVideo(videoElement, {
           canvas: state.canvas || (state.canvas = windowLike.document.createElement("canvas")),
           windowLike,
@@ -76,4 +76,14 @@ export function createScannerController({
     start,
     stop,
   };
+
+  async function loadVideoDecoder() {
+    if (typeof state.decodeVideo === "function") {
+      return state.decodeVideo;
+    }
+
+    const module = await import("./qr-decoder.mjs");
+    state.decodeVideo = module.decodePairingPayloadTextFromVideo;
+    return state.decodeVideo;
+  }
 }

@@ -6,6 +6,7 @@ const CONNECT_RETRY_DELAY_MS = 900;
 const UNEXPECTED_CLOSE_RETRY_DELAY_MS = 1_500;
 const CLOSE_CODE_INVALID_SESSION = 4000;
 const CLOSE_CODE_IPHONE_REPLACED = 4003;
+const CLOSE_REASON_IPHONE_REPLACED = "Replaced by newer iPhone connection";
 
 export function createBrowserBridgeClient({
   pairingPayload,
@@ -178,9 +179,11 @@ export function createBrowserBridgeClient({
       const shouldRetryWaitingForMac = !initialized
         && !hasEstablishedSession
         && closeReason === "Mac session not available";
+      const wasReplacedByNewerClient = closeCode === CLOSE_CODE_IPHONE_REPLACED
+        || closeReason === CLOSE_REASON_IPHONE_REPLACED;
       const shouldRetryPersistentSession = hasEstablishedSession
         && closeCode !== CLOSE_CODE_INVALID_SESSION
-        && closeCode !== CLOSE_CODE_IPHONE_REPLACED;
+        && !wasReplacedByNewerClient;
 
       if (shouldRetryWaitingForMac) {
         onLog("warn", "Mac session is not available yet. Retrying the relay socket.", closeReason);

@@ -1,4 +1,4 @@
-const CACHE_NAME = "remodex-web-deck-v10";
+const CACHE_NAME = "remodex-web-deck-v12";
 const APP_SHELL_URLS = [
   "/app/",
   "/app/bootstrap.mjs",
@@ -6,18 +6,16 @@ const APP_SHELL_URLS = [
   "/app/main.mjs",
   "/app/manifest.webmanifest",
   "/app/icon.svg",
-  "/app/vendor/jsqr.js",
   "/app/modules/browser-relay-client.mjs",
   "/app/modules/browser-bridge-client.mjs",
   "/app/modules/browser-notifications.mjs",
   "/app/modules/browser-secure-transport.mjs",
   "/app/modules/capabilities.mjs",
+  "/app/modules/conversation-render-state.mjs",
   "/app/modules/mock-data.mjs",
   "/app/modules/mobile-dock-state.mjs",
   "/app/modules/pairing.mjs",
   "/app/modules/preferences.mjs",
-  "/app/modules/qr-decoder.mjs",
-  "/app/modules/scanner-controller.mjs",
   "/app/modules/storage.mjs",
   "/app/modules/thread-chat-state.mjs",
   "/app/modules/thread-collaboration-state.mjs",
