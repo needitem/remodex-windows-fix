@@ -1,4 +1,4 @@
-const CACHE_NAME = "remodex-web-deck-v7";
+const CACHE_NAME = "remodex-web-deck-v8";
 const APP_SHELL_URLS = [
   "/app/",
   "/app/bootstrap.mjs",

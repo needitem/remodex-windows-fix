@@ -1,4 +1,4 @@
-const APP_VERSION = "20260402a";
+const APP_VERSION = "20260402b";
 const CLEANUP_MARKER = `remodex-web.bootstrap-cleanup.${APP_VERSION}`;
 const CURRENT_SW_MARKER = "/app/sw.mjs";
 
