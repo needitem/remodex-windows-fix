@@ -4,6 +4,10 @@ import {
   shouldAutoScrollMessageList,
 } from "./modules/conversation-render-state.mjs";
 import {
+  createAnimationFrameBatcher,
+  createDeferredStorageWriter,
+} from "./modules/ui-work-batching.mjs";
+import {
   buildSidebarChatRenderKey,
   buildSidebarRenderModel,
   buildSidebarSelectionDelta,
@@ -132,6 +136,21 @@ let bridgeClientModulePromise = null;
 const patchRefreshTimers = new Map();
 let richMessageRendererModule = null;
 let richMessageRendererPromise = null;
+const conversationRenderBatcher = createAnimationFrameBatcher(() => {
+  renderConversation();
+}, {
+  cancelFrame: window.cancelAnimationFrame?.bind(window),
+  requestFrame: window.requestAnimationFrame?.bind(window),
+});
+const threadCacheWriter = createDeferredStorageWriter(() => {
+  saveStoredThreadCache(state.threadCache);
+}, {
+  cancelIdleCallback: window.cancelIdleCallback?.bind(window),
+  clearTimeout: window.clearTimeout.bind(window),
+  requestIdleCallback: window.requestIdleCallback?.bind(window),
+  setTimeout: window.setTimeout.bind(window),
+});
+let persistedLastThreadId = state.selectedChatId || null;
 const modalFocusRestore = new WeakMap();
 const swipeGesture = {
   active: false,
@@ -473,6 +492,13 @@ function wireEvents() {
   elements.relayUrlInput.addEventListener("change", (event) => { state.relayOverride = event.target.value.trim(); saveStoredRelayOverride(state.relayOverride); addLog("info", "Updated relay base URL.", state.relayOverride || "inferred"); renderConnection(); });
   elements.connectButton.addEventListener("click", connectRelay);
   elements.disconnectButton.addEventListener("click", () => void disconnectRelay(false));
+  document.addEventListener("visibilitychange", () => {
+    if (document.visibilityState === "hidden") {
+      flushPendingThreadCacheWrite();
+    }
+  });
+  window.addEventListener("pagehide", flushPendingThreadCacheWrite);
+  window.addEventListener("beforeunload", flushPendingThreadCacheWrite);
   document.addEventListener("keydown", handleGlobalKeydown);
   wireSwipeGestures();
   elements.mobileBackButton.addEventListener("click", () => {
@@ -486,7 +512,7 @@ function renderAll() {
   renderSelects();
   renderSidebar();
   renderDeckSummary();
-  renderConversation();
+  renderConversationNow();
   renderPairing();
   renderConnection();
   renderRuntimeStrip();
@@ -510,7 +536,7 @@ function renderAfterChatStateChange({
   if (includeDeckSummary) {
     renderDeckSummary();
   }
-  renderConversation();
+  renderConversationNow();
   renderConnection();
   renderRuntimeStrip();
   if (includeDiffViewer) {
@@ -526,7 +552,7 @@ function renderAfterChatStateChange({
 function renderAfterPreferenceChange() {
   renderBody();
   renderSelects();
-  renderConversation();
+  renderConversationNow();
   renderConnection();
   renderRuntimeStrip();
   renderSettings();
@@ -626,7 +652,7 @@ function renderConversation() {
   if (chatNeedsRichMessageRenderer(chat) && !richMessageRendererModule) {
     void ensureRichMessageRenderer().then(() => {
       if (selectedChat()?.id === chat.id) {
-        renderConversation();
+        scheduleConversationRenderForChat(chat);
       }
     });
   }
@@ -684,6 +710,28 @@ function scheduleSidebarRender() {
     searchRenderTimer = 0;
     renderSidebar();
   }, 120);
+}
+
+function renderConversationNow() {
+  conversationRenderBatcher.cancel();
+  renderConversation();
+}
+
+function scheduleConversationRenderForChat(chat) {
+  if (!chat || selectedChat()?.id !== chat.id) {
+    return;
+  }
+
+  conversationRenderBatcher.schedule();
+}
+
+function queueChatPersistenceAndRender(chat) {
+  persistThreadCacheForChat(chat);
+  scheduleConversationRenderForChat(chat);
+}
+
+function flushPendingThreadCacheWrite() {
+  threadCacheWriter.flush();
 }
 
 function syncSidebarSelection(previousSelectedChatId, nextSelectedChatId) {
@@ -913,6 +961,10 @@ function syncConversationMessageCards(chat) {
     elements.messageList.dataset.chatId = String(chat.id || "");
   }
 
+  if (trySyncConversationMessageCardsInOrder(chat)) {
+    return;
+  }
+
   const existingCardsById = new Map();
   for (const child of Array.from(elements.messageList.children)) {
     if (child instanceof HTMLElement && child.dataset.messageId) {
@@ -944,6 +996,36 @@ function syncConversationMessageCards(chat) {
   for (const staleCard of existingCardsById.values()) {
     staleCard.remove();
   }
+}
+
+function trySyncConversationMessageCardsInOrder(chat) {
+  const existingCount = elements.messageList.childElementCount;
+  if (existingCount > chat.messages.length) {
+    return false;
+  }
+
+  for (let index = 0; index < existingCount; index += 1) {
+    const card = elements.messageList.children[index];
+    if (!(card instanceof HTMLElement)) {
+      return false;
+    }
+
+    const message = chat.messages[index];
+    const messageId = String(message?.id || `${message?.role || "assistant"}:${index}`);
+    if (card.dataset.messageId !== messageId) {
+      return false;
+    }
+
+    updateMessageCard(card, message, messageId, buildMessageRenderKey(message));
+  }
+
+  for (let index = existingCount; index < chat.messages.length; index += 1) {
+    const message = chat.messages[index];
+    const messageId = String(message?.id || `${message?.role || "assistant"}:${index}`);
+    elements.messageList.append(createMessageCard(message, messageId, buildMessageRenderKey(message)));
+  }
+
+  return true;
 }
 
 function createMessageCard(message, messageId, renderKey) {
@@ -1784,7 +1866,7 @@ async function syncLatestPatchForChat(chat) {
 
     persistThreadCacheForChat(chat);
     if (selectedChat()?.id === chat.id) {
-      renderConversation();
+      scheduleConversationRenderForChat(chat);
       renderDiffViewer();
     }
   } catch (error) {
@@ -2069,7 +2151,7 @@ function renderAfterChatSelection(previousSelectedChatId = "") {
   renderBody();
   renderSelects();
   syncSidebarSelection(previousSelectedChatId, state.selectedChatId);
-  renderConversation();
+  renderConversationNow();
   renderConnection();
   renderRuntimeStrip();
   renderDiffViewer();
@@ -2351,10 +2433,7 @@ function handleNotification(notification) {
         if (pendingMessage) {
           pendingMessage.text = "Sent. Codex started the turn.";
           pendingMessage.time = "started";
-          persistThreadCacheForChat(chat);
-          if (selectedChat()?.id === chat.id) {
-            renderConversation();
-          }
+          queueChatPersistenceAndRender(chat);
         }
       }
     }
@@ -2389,10 +2468,7 @@ function applyStructuredUserInputRequest(requestId, params) {
   }
 
   const { chat, requestId: normalizedRequestId } = update;
-  persistThreadCacheForChat(chat);
-  if (selectedChat()?.id === chat.id) {
-    renderConversation();
-  }
+  queueChatPersistenceAndRender(chat);
   void dispatchBrowserNotification({
     body: `${chat.title || "Thread"} needs a quick answer before it can continue.`,
     tag: `remodex-web:request:${normalizedRequestId}`,
@@ -2414,10 +2490,7 @@ function applyApprovalRequest(requestId, method, params) {
   }
 
   const { chat, message, requestId: normalizedRequestId } = update;
-  persistThreadCacheForChat(chat);
-  if (selectedChat()?.id === chat.id) {
-    renderConversation();
-  }
+  queueChatPersistenceAndRender(chat);
   void dispatchBrowserNotification({
     body: message.approval.reason || summarizeCommandForDisplay(message.approval.command || "Pending approval"),
     tag: `remodex-web:approval:${normalizedRequestId}`,
@@ -2437,10 +2510,7 @@ function applyTurnPlanUpdatedNotification(params) {
   }
 
   const { chat } = update;
-  persistThreadCacheForChat(chat);
-  if (selectedChat()?.id === chat.id) {
-    renderConversation();
-  }
+  queueChatPersistenceAndRender(chat);
 }
 
 function applyPlanDeltaNotification(params) {
@@ -2455,10 +2525,7 @@ function applyPlanDeltaNotification(params) {
   }
 
   const { chat } = update;
-  persistThreadCacheForChat(chat);
-  if (selectedChat()?.id === chat.id) {
-    renderConversation();
-  }
+  queueChatPersistenceAndRender(chat);
 }
 
 function applyServerRequestResolvedNotification(params) {
@@ -2473,10 +2540,7 @@ function applyServerRequestResolvedNotification(params) {
   }
 
   const { chat } = update;
-  persistThreadCacheForChat(chat);
-  if (selectedChat()?.id === chat.id) {
-    renderConversation();
-  }
+  queueChatPersistenceAndRender(chat);
 }
 
 function scheduleRefresh(threadId) {
@@ -2881,10 +2945,7 @@ function applyAgentDeltaNotification(params) {
 
   message.text += delta;
   chat.snippet = message.text.slice(0, 120) || chat.snippet;
-  persistThreadCacheForChat(chat);
-  if (selectedChat()?.id === chat.id) {
-    renderConversation();
-  }
+  queueChatPersistenceAndRender(chat);
 }
 
 function applyCompletedItemNotification(params) {
@@ -2967,10 +3028,7 @@ function applyCompletedItemNotification(params) {
     message.time = "completed";
   }
 
-  persistThreadCacheForChat(chat);
-  if (selectedChat()?.id === chat.id) {
-    renderConversation();
-  }
+  queueChatPersistenceAndRender(chat);
 }
 
 function applyStartedItemNotification(params) {
@@ -3024,10 +3082,7 @@ function applyStartedItemNotification(params) {
     message.time = "running";
   }
 
-  persistThreadCacheForChat(chat);
-  if (selectedChat()?.id === chat.id) {
-    renderConversation();
-  }
+  queueChatPersistenceAndRender(chat);
 }
 
 function applyReasoningDeltaNotification(params, method) {
@@ -3060,10 +3115,7 @@ function applyReasoningDeltaNotification(params, method) {
     if (!message.text) {
       message.text = "Thinking...";
     }
-    persistThreadCacheForChat(chat);
-    if (selectedChat()?.id === chat.id) {
-      renderConversation();
-    }
+    queueChatPersistenceAndRender(chat);
     return;
   }
 
@@ -3075,10 +3127,7 @@ function applyReasoningDeltaNotification(params, method) {
     message.text += "\n";
   }
   message.text += delta;
-  persistThreadCacheForChat(chat);
-  if (selectedChat()?.id === chat.id) {
-    renderConversation();
-  }
+  queueChatPersistenceAndRender(chat);
 }
 
 function applyCommandOutputDeltaNotification(params) {
@@ -3098,10 +3147,7 @@ function applyCommandOutputDeltaNotification(params) {
   message.rawOutput = `${message.rawOutput || ""}${message.rawOutput ? "\n" : ""}${delta}`;
   message.preview = buildCommandPreview(message.rawOutput);
   message.time = "running";
-  persistThreadCacheForChat(chat);
-  if (selectedChat()?.id === chat.id) {
-    renderConversation();
-  }
+  queueChatPersistenceAndRender(chat);
 }
 
 function applyCodexUserMessageNotification(params) {
@@ -3138,10 +3184,7 @@ function applyCodexUserMessageNotification(params) {
     });
   }
 
-  persistThreadCacheForChat(chat);
-  if (selectedChat()?.id === chat.id) {
-    renderConversation();
-  }
+  queueChatPersistenceAndRender(chat);
 }
 
 function applyCodexAgentMessageNotification(params) {
@@ -3177,10 +3220,7 @@ function applyCodexAgentMessageNotification(params) {
   }
 
   chat.snippet = messageText;
-  persistThreadCacheForChat(chat);
-  if (selectedChat()?.id === chat.id) {
-    renderConversation();
-  }
+  queueChatPersistenceAndRender(chat);
 }
 
 function applyBackgroundEventNotification(params) {
@@ -3209,10 +3249,7 @@ function applyBackgroundEventNotification(params) {
     });
   }
 
-  persistThreadCacheForChat(chat);
-  if (selectedChat()?.id === chat.id) {
-    renderConversation();
-  }
+  queueChatPersistenceAndRender(chat);
 }
 
 function ensureCommandMessage(chat, itemId, command = "") {
@@ -3292,10 +3329,7 @@ function legacyApplyExecCommandBeginNotification(params) {
     });
   }
 
-  persistThreadCacheForChat(chat);
-  if (selectedChat()?.id === chat.id) {
-    renderConversation();
-  }
+  queueChatPersistenceAndRender(chat);
 }
 
 function legacyApplyExecCommandOutputNotification(params) {
@@ -3327,10 +3361,7 @@ function legacyApplyExecCommandOutputNotification(params) {
   }
 
   message.text += `${message.text ? "\n\n" : ""}${delta}`;
-  persistThreadCacheForChat(chat);
-  if (selectedChat()?.id === chat.id) {
-    renderConversation();
-  }
+  queueChatPersistenceAndRender(chat);
 }
 
 function legacyApplyExecCommandEndNotification(params) {
@@ -3365,10 +3396,7 @@ function legacyApplyExecCommandEndNotification(params) {
     message.text += `${message.text ? "\n\n" : ""}${output}`;
   }
   message.time = "completed";
-  persistThreadCacheForChat(chat);
-  if (selectedChat()?.id === chat.id) {
-    renderConversation();
-  }
+  queueChatPersistenceAndRender(chat);
 }
 
 function mergeChatWithCache(chat) {
@@ -3399,10 +3427,7 @@ function applyExecCommandBeginNotification(params) {
     return;
   }
 
-  persistThreadCacheForChat(chat);
-  if (selectedChat()?.id === chat.id) {
-    renderConversation();
-  }
+  queueChatPersistenceAndRender(chat);
 }
 
 function applyExecCommandOutputNotification(params) {
@@ -3420,10 +3445,7 @@ function applyExecCommandOutputNotification(params) {
     return;
   }
 
-  persistThreadCacheForChat(chat);
-  if (selectedChat()?.id === chat.id) {
-    renderConversation();
-  }
+  queueChatPersistenceAndRender(chat);
 }
 
 function applyExecCommandEndNotification(params) {
@@ -3441,10 +3463,7 @@ function applyExecCommandEndNotification(params) {
     return;
   }
 
-  persistThreadCacheForChat(chat);
-  if (selectedChat()?.id === chat.id) {
-    renderConversation();
-  }
+  queueChatPersistenceAndRender(chat);
 }
 
 function chatHasPendingTurn(chat) {
@@ -3470,36 +3489,59 @@ function persistThreadCacheForChat(chat) {
     title: chat.title,
     writable: chat.writable === true,
   };
-  saveStoredThreadCache(state.threadCache);
+  threadCacheWriter.schedule();
 }
 
 function persistLastThreadId(threadId) {
-  saveStoredLastThreadId(threadId);
+  const normalizedThreadId = threadId || null;
+  if (persistedLastThreadId === normalizedThreadId) {
+    return;
+  }
+
+  persistedLastThreadId = normalizedThreadId;
+  saveStoredLastThreadId(normalizedThreadId);
 }
 
 function setOptions(select, values, selectedValue = select.value) {
-  select.replaceChildren(...values.map((value) => {
-    const option = document.createElement("option");
-    option.value = value;
-    option.textContent = value;
-    return option;
-  }));
-  if (values.includes(selectedValue)) {
-    select.value = selectedValue;
+  const normalizedValues = values.map((value) => String(value));
+  const nextOptionsKey = normalizedValues.join("\u001f");
+  if (select.__remodexOptionsKey !== nextOptionsKey) {
+    select.__remodexOptionsKey = nextOptionsKey;
+    select.replaceChildren(...normalizedValues.map((value) => {
+      const option = document.createElement("option");
+      option.value = value;
+      option.textContent = value;
+      return option;
+    }));
+  }
+  const normalizedSelectedValue = String(selectedValue);
+  if (normalizedValues.includes(normalizedSelectedValue) && select.value !== normalizedSelectedValue) {
+    select.value = normalizedSelectedValue;
   }
 }
 
 function setOptionEntries(select, entries, selectedValue = select.value) {
-  select.replaceChildren(...entries.map((entry) => {
-    const option = document.createElement("option");
-    option.value = entry.value;
-    option.textContent = entry.label;
-    return option;
+  const normalizedEntries = entries.map((entry) => ({
+    label: String(entry.label),
+    value: String(entry.value),
   }));
-  if (entries.some((entry) => entry.value === selectedValue)) {
-    select.value = selectedValue;
-  } else if (entries[0]) {
-    select.value = entries[0].value;
+  const nextOptionsKey = normalizedEntries.map((entry) => `${entry.value}\u0000${entry.label}`).join("\u001f");
+  if (select.__remodexOptionEntriesKey !== nextOptionsKey) {
+    select.__remodexOptionEntriesKey = nextOptionsKey;
+    select.replaceChildren(...normalizedEntries.map((entry) => {
+      const option = document.createElement("option");
+      option.value = entry.value;
+      option.textContent = entry.label;
+      return option;
+    }));
+  }
+  const normalizedSelectedValue = String(selectedValue);
+  if (normalizedEntries.some((entry) => entry.value === normalizedSelectedValue)) {
+    if (select.value !== normalizedSelectedValue) {
+      select.value = normalizedSelectedValue;
+    }
+  } else if (normalizedEntries[0] && select.value !== normalizedEntries[0].value) {
+    select.value = normalizedEntries[0].value;
   }
 }
 
@@ -3691,7 +3733,7 @@ async function submitStructuredUserInputResponse(message) {
     const answers = collectStructuredQuestionAnswers(question, message);
     if (!answers.length) {
       message.error = `Answer "${question.header || question.question}" before sending.`;
-      renderConversation();
+      renderConversationNow();
       return;
     }
     answersByQuestionId[question.id] = answers;
@@ -3699,7 +3741,7 @@ async function submitStructuredUserInputResponse(message) {
 
   message.error = "";
   message.resolving = true;
-  renderConversation();
+  renderConversationNow();
 
   try {
     await state.client?.respondToServerRequest(
@@ -3709,14 +3751,14 @@ async function submitStructuredUserInputResponse(message) {
   } catch (error) {
     message.error = error.message || "Could not send the answers.";
     message.resolving = false;
-    renderConversation();
+    renderConversationNow();
   }
 }
 
 async function submitApprovalDecision(message, decision) {
   message.error = "";
   message.resolving = true;
-  renderConversation();
+  renderConversationNow();
 
   try {
     await state.client?.respondToServerRequest(message.requestId, {
@@ -3725,7 +3767,7 @@ async function submitApprovalDecision(message, decision) {
   } catch (error) {
     message.error = error.message || "Could not send the approval decision.";
     message.resolving = false;
-    renderConversation();
+    renderConversationNow();
   }
 }
 
