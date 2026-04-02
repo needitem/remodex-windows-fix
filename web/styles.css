@@ -513,6 +513,8 @@ h2 {
 .folder-section {
   display: grid;
   gap: 8px;
+  content-visibility: auto;
+  contain-intrinsic-size: 280px;
 }
 
 .folder-heading {
@@ -2192,6 +2194,13 @@ h2 {
   line-height: 1.6;
 }
 
+.diff-chunk {
+  display: grid;
+  gap: 6px;
+  content-visibility: auto;
+  contain-intrinsic-size: 960px;
+}
+
 .diff-line {
   display: grid;
   grid-template-columns: 56px 56px 22px minmax(0, 1fr);
@@ -2954,6 +2963,10 @@ body.modal-open {
   .diff-lines {
     gap: 4px;
     font-size: 0.8rem;
+  }
+
+  .diff-chunk {
+    gap: 4px;
   }
 
   .diff-line {

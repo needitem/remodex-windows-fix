@@ -183,6 +183,8 @@ test("readLatestThreadPatch returns the newest apply_patch payload for the reque
   const result = readLatestThreadPatch({ threadId: "thread-a" });
   assert.equal(result?.turnId, "turn-a-2");
   assert.match(result?.patch ?? "", /\*\*\* Add File: new\.txt/);
+  assert.match(result?.displayPatch ?? "", /^diff --git a\/new\.txt b\/new\.txt/m);
+  assert.match(result?.displayPatch ?? "", /^@@ -0,0 \+1 @@$/m);
   assert.match(result?.rolloutPath ?? "", /13-29-27-thread-a\.jsonl$/);
 });
 

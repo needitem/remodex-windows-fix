@@ -6,6 +6,11 @@ import {
   shouldAutoScrollMessageList,
 } from "./modules/conversation-render-state.mjs";
 import {
+  buildSidebarChatRenderKey,
+  buildSidebarRenderModel,
+  buildSidebarSelectionDelta,
+} from "./modules/sidebar-render-state.mjs";
+import {
   describeBrowserNotificationPermission,
   getBrowserNotificationState,
   requestBrowserNotificationPermission,
@@ -65,7 +70,7 @@ import {
 } from "./modules/thread-command-state.mjs";
 import {
   buildPatchPreview,
-  buildUnifiedDiffElement,
+  renderUnifiedDiffInto,
   renderMessageBubble,
   summarizePatchForDisplay,
 } from "./modules/thread-message-renderer.mjs";
@@ -263,6 +268,7 @@ function wireEvents() {
     state.searchQuery = event.target.value.trim().toLowerCase();
     scheduleSidebarRender();
   });
+  elements.folderList.addEventListener("click", handleSidebarClick);
   elements.newChatButton.addEventListener("click", () => { void createChat(); });
   elements.mobileDeckButton?.addEventListener("click", () => {
     pulseHaptic(8);
@@ -355,6 +361,53 @@ function renderAll() {
   renderAppChrome();
 }
 
+function renderAfterChatStateChange({
+  includeDeckSummary = false,
+  includeDiffViewer = true,
+  includeLogs = false,
+  includeSidebar = true,
+} = {}) {
+  renderSelects();
+  if (includeSidebar) {
+    renderSidebar();
+  }
+  if (includeDeckSummary) {
+    renderDeckSummary();
+  }
+  renderConversation();
+  renderConnection();
+  renderRuntimeStrip();
+  if (includeDiffViewer) {
+    renderDiffViewer();
+  }
+  if (includeLogs) {
+    renderLogs();
+  }
+  autosizeComposer();
+  renderAppChrome();
+}
+
+function renderAfterPreferenceChange() {
+  renderBody();
+  renderSelects();
+  renderConversation();
+  renderConnection();
+  renderRuntimeStrip();
+  renderSettings();
+  renderAppChrome();
+}
+
+function renderAfterPairingStateChange() {
+  renderPairing();
+  renderConnection();
+  renderDeckSummary();
+  renderThreadSpotlight(selectedChat());
+  renderRuntimeStrip();
+  renderDiffViewer();
+  renderSettings();
+  renderAppChrome();
+}
+
 function renderBody() {
   elements.body.classList.toggle("sidebar-open", state.sidebarOpen);
   elements.body.classList.toggle("mobile-thread-open", state.mobileThreadOpen && isNarrowViewport());
@@ -388,79 +441,17 @@ function renderSelects() {
 }
 
 function renderSidebar() {
-  const fragment = document.createDocumentFragment();
-  const allChats = flattenChats(state.conversations);
-  let visibleThreadCount = 0;
-  let visibleWorkspaceCount = 0;
-  let hasChats = false;
-  for (const group of state.conversations) {
-    const chats = group.chats.filter((chat) => [chat.title, chat.snippet, chat.repo].join(" ").toLowerCase().includes(state.searchQuery));
-    if (!chats.length) {
-      continue;
-    }
-    hasChats = true;
-    visibleThreadCount += chats.length;
-    visibleWorkspaceCount += 1;
-    const section = document.createElement("section");
-    section.className = "folder-section";
-    section.innerHTML = '<div class="folder-heading"><div class="folder-label"><span class="folder-icon" aria-hidden="true"></span><span></span></div><button class="folder-plus" type="button">+ Thread</button></div><div class="chat-list"></div>';
-    section.querySelector(".folder-label span:last-child").textContent = group.folder;
-    section.querySelector(".folder-plus").addEventListener("click", () => { void createChat(group.folder); });
-    const list = section.querySelector(".chat-list");
-    for (const chat of chats) {
-      const button = document.createElement("button");
-      button.type = "button";
-      button.dataset.chatId = chat.id;
-      const isActive = chat.id === state.selectedChatId;
-      const isPending = chatHasPendingTurn(chat);
-      button.className = `chat-item${isActive ? " is-active" : ""}${isPending ? " is-pending" : ""}`;
-      button.innerHTML = `
-        <div class="chat-item-head">
-          <span class="chat-item-title">${escapeHTML(chat.title)}</span>
-          <span class="chat-item-timestamp">${escapeHTML(chat.timestamp)}</span>
-        </div>
-        <div class="chat-item-meta">
-          <span class="chat-item-snippet">${escapeHTML(chat.snippet)}</span>
-          <span class="chat-item-dot${isPending ? " chat-item-dot-live" : ""}"${isActive || isPending ? "" : " hidden"}></span>
-        </div>
-        ${isPending
-          ? '<div class="chat-item-tags"><span class="chat-item-tag chat-item-tag-live">Running</span></div>'
-          : ""}
-      `;
-      button.addEventListener("click", () => {
-        state.selectedChatId = chat.id;
-        applyThreadRuntimeToPreferences(chat);
-        state.sidebarOpen = false;
-        if (isNarrowViewport()) {
-          setMobileThreadOpen(true);
-        }
-        pulseHaptic(10);
-        renderAll();
-        focusComposer();
-        if (chat.threadId && !chat.messagesLoaded) {
-          void readRemoteThread(chat.threadId);
-        }
-      });
-      list.append(button);
-    }
-    fragment.append(section);
+  const sidebarModel = buildSidebarRenderModel({
+    conversations: state.conversations,
+    isChatPending: chatHasPendingTurn,
+    searchQuery: state.searchQuery,
+    selectedChatId: state.selectedChatId,
+  });
+
+  syncSidebarSections(sidebarModel);
+  if (elements.searchMeta.textContent !== sidebarModel.metaText) {
+    elements.searchMeta.textContent = sidebarModel.metaText;
   }
-  if (!hasChats) {
-    const emptyState = document.createElement("section");
-    emptyState.className = "empty-panel";
-    emptyState.innerHTML = `
-      <p class="empty-kicker">${state.searchQuery ? "No Matches" : "No Chats Yet"}</p>
-      <h3>${state.searchQuery ? "Try a broader search term" : "Connect the bridge to load your real threads"}</h3>
-      <p>${state.searchQuery
-    ? `No threads matched "${state.searchQuery}". Search by repo, thread title, or the latest snippet.`
-    : "Pair the browser client, then your actual Remodex thread list will appear here instead of demo content."}</p>
-    `;
-    fragment.append(emptyState);
-  }
-  elements.folderList.replaceChildren(fragment);
-  elements.searchMeta.textContent = state.searchQuery
-    ? `${visibleThreadCount} result${visibleThreadCount === 1 ? "" : "s"} across ${visibleWorkspaceCount} workspace${visibleWorkspaceCount === 1 ? "" : "s"}`
-    : `${allChats.length} thread${allChats.length === 1 ? "" : "s"} across ${state.conversations.length} workspace${state.conversations.length === 1 ? "" : "s"}`;
 }
 
 function renderConversation() {
@@ -536,10 +527,12 @@ function renderConnection() {
     : state.connection.detail;
   elements.connectionDot.className = "connection-dot";
   elements.connectionDot.classList.add(`state-${state.connection.status}`);
-  elements.composerStatus.textContent = composerStatusLabel(selectedChat());
-  renderDeckSummary();
-  renderThreadSpotlight(selectedChat());
-  renderDiffViewer();
+}
+
+function isSameConnectionState(left, right) {
+  return left?.label === right?.label
+    && left?.detail === right?.detail
+    && left?.status === right?.status;
 }
 
 function scheduleSidebarRender() {
@@ -548,6 +541,216 @@ function scheduleSidebarRender() {
     searchRenderTimer = 0;
     renderSidebar();
   }, 120);
+}
+
+function syncSidebarSelection(previousSelectedChatId, nextSelectedChatId) {
+  if (elements.folderList.dataset.renderMode !== "groups") {
+    renderSidebar();
+    return;
+  }
+
+  for (const change of buildSidebarSelectionDelta(previousSelectedChatId, nextSelectedChatId)) {
+    const button = findSidebarChatButtonById(change.id);
+    if (!(button instanceof HTMLElement)) {
+      continue;
+    }
+    updateSidebarChatButtonActiveState(button, change.active);
+  }
+}
+
+function findSidebarChatButtonById(chatId) {
+  if (!chatId) {
+    return null;
+  }
+
+  for (const button of elements.folderList.querySelectorAll(".chat-item")) {
+    if (button instanceof HTMLElement && button.dataset.chatId === chatId) {
+      return button;
+    }
+  }
+  return null;
+}
+
+function updateSidebarChatButtonActiveState(button, active) {
+  button.classList.toggle("is-active", active);
+  button.setAttribute("aria-current", active ? "true" : "false");
+  const dot = button.querySelector(".chat-item-dot");
+  if (dot instanceof HTMLElement && !dot.classList.contains("chat-item-dot-live")) {
+    dot.hidden = !active;
+  }
+}
+
+function handleSidebarClick(event) {
+  const target = event.target instanceof Element ? event.target : null;
+  if (!target) {
+    return;
+  }
+
+  const createThreadButton = target.closest(".folder-plus");
+  if (createThreadButton instanceof HTMLElement && elements.folderList.contains(createThreadButton)) {
+    void createChat(createThreadButton.dataset.folder || selectedChat()?.repo || state.conversations[0]?.folder);
+    return;
+  }
+
+  const chatButton = target.closest(".chat-item");
+  if (chatButton instanceof HTMLElement && elements.folderList.contains(chatButton)) {
+    selectChatById(chatButton.dataset.chatId || "");
+  }
+}
+
+function syncSidebarSections(sidebarModel) {
+  if (!sidebarModel.hasChats) {
+    syncSidebarEmptyState(sidebarModel);
+    return;
+  }
+
+  if (elements.folderList.dataset.renderMode !== "groups") {
+    elements.folderList.replaceChildren();
+    elements.folderList.dataset.renderMode = "groups";
+  }
+
+  const existingSectionsByFolder = new Map();
+  for (const child of Array.from(elements.folderList.children)) {
+    if (child instanceof HTMLElement && child.dataset.folder) {
+      existingSectionsByFolder.set(child.dataset.folder, child);
+    }
+  }
+
+  let insertionCursor = elements.folderList.firstElementChild;
+  for (const group of sidebarModel.groups) {
+    let section = existingSectionsByFolder.get(group.folder) || null;
+    if (!section) {
+      section = createSidebarSection(group.folder);
+      elements.folderList.insertBefore(section, insertionCursor);
+    } else {
+      existingSectionsByFolder.delete(group.folder);
+      if (section !== insertionCursor) {
+        elements.folderList.insertBefore(section, insertionCursor);
+      }
+    }
+
+    updateSidebarSection(section, group);
+    insertionCursor = section.nextElementSibling;
+  }
+
+  for (const staleSection of existingSectionsByFolder.values()) {
+    staleSection.remove();
+  }
+}
+
+function syncSidebarEmptyState(sidebarModel) {
+  const emptyRenderKey = `${sidebarModel.normalizedQuery}|${sidebarModel.metaText}`;
+  const existingChild = elements.folderList.firstElementChild;
+  if (
+    elements.folderList.dataset.renderMode === "empty"
+    && existingChild instanceof HTMLElement
+    && existingChild.dataset.renderKey === emptyRenderKey
+  ) {
+    return;
+  }
+
+  const emptyState = document.createElement("section");
+  emptyState.className = "empty-panel";
+  emptyState.dataset.renderKey = emptyRenderKey;
+  emptyState.innerHTML = `
+      <p class="empty-kicker">${sidebarModel.normalizedQuery ? "No Matches" : "No Chats Yet"}</p>
+      <h3>${sidebarModel.normalizedQuery ? "Try a broader search term" : "Connect the bridge to load your real threads"}</h3>
+      <p>${sidebarModel.normalizedQuery
+    ? `No threads matched "${state.searchQuery}". Search by repo, thread title, or the latest snippet.`
+    : "Pair the browser client, then your actual Remodex thread list will appear here instead of demo content."}</p>
+    `;
+  elements.folderList.replaceChildren(emptyState);
+  elements.folderList.dataset.renderMode = "empty";
+}
+
+function createSidebarSection(folder) {
+  const section = document.createElement("section");
+  section.className = "folder-section";
+  section.dataset.folder = folder;
+  section.innerHTML = '<div class="folder-heading"><div class="folder-label"><span class="folder-icon" aria-hidden="true"></span><span></span></div><button class="folder-plus" type="button">+ Thread</button></div><div class="chat-list"></div>';
+  return section;
+}
+
+function updateSidebarSection(section, group) {
+  const nextGroupRenderKey = group.chats.map((chat) => buildSidebarChatRenderKey(chat)).join("\n");
+  const label = section.querySelector(".folder-label span:last-child");
+  const createThreadButton = section.querySelector(".folder-plus");
+  if (label && label.textContent !== group.folder) {
+    label.textContent = group.folder;
+  }
+  if (createThreadButton instanceof HTMLElement && createThreadButton.dataset.folder !== group.folder) {
+    createThreadButton.dataset.folder = group.folder;
+  }
+  if (section.__remodexRenderKey === nextGroupRenderKey) {
+    return;
+  }
+
+  section.__remodexRenderKey = nextGroupRenderKey;
+  const list = section.querySelector(".chat-list");
+  if (list instanceof HTMLElement) {
+    syncSidebarChatButtons(list, group.chats);
+  }
+}
+
+function syncSidebarChatButtons(list, chats) {
+  const existingButtonsById = new Map();
+  for (const child of Array.from(list.children)) {
+    if (child instanceof HTMLElement && child.dataset.chatId) {
+      existingButtonsById.set(child.dataset.chatId, child);
+    }
+  }
+
+  let insertionCursor = list.firstElementChild;
+  for (const chat of chats) {
+    let button = existingButtonsById.get(chat.id) || null;
+    const renderKey = buildSidebarChatRenderKey(chat);
+    if (!button) {
+      button = document.createElement("button");
+      button.type = "button";
+      list.insertBefore(button, insertionCursor);
+    } else {
+      existingButtonsById.delete(chat.id);
+      if (button !== insertionCursor) {
+        list.insertBefore(button, insertionCursor);
+      }
+    }
+
+    updateSidebarChatButton(button, chat, renderKey);
+    insertionCursor = button.nextElementSibling;
+  }
+
+  for (const staleButton of existingButtonsById.values()) {
+    staleButton.remove();
+  }
+}
+
+function updateSidebarChatButton(button, chat, renderKey) {
+  const className = `chat-item${chat.active ? " is-active" : ""}${chat.pending ? " is-pending" : ""}`;
+  if (button.className !== className) {
+    button.className = className;
+  }
+  if (button.dataset.chatId !== chat.id) {
+    button.dataset.chatId = chat.id;
+  }
+  button.setAttribute("aria-current", chat.active ? "true" : "false");
+  if (button.__remodexRenderKey === renderKey) {
+    return;
+  }
+
+  button.__remodexRenderKey = renderKey;
+  button.innerHTML = `
+        <div class="chat-item-head">
+          <span class="chat-item-title">${escapeHTML(chat.title)}</span>
+          <span class="chat-item-timestamp">${escapeHTML(chat.timestamp)}</span>
+        </div>
+        <div class="chat-item-meta">
+          <span class="chat-item-snippet">${escapeHTML(chat.snippet)}</span>
+          <span class="chat-item-dot${chat.pending ? " chat-item-dot-live" : ""}"${chat.active || chat.pending ? "" : " hidden"}></span>
+        </div>
+        ${chat.pending
+    ? '<div class="chat-item-tags"><span class="chat-item-tag chat-item-tag-live">Running</span></div>'
+    : ""}
+      `;
 }
 
 function captureConversationRenderState(chatId) {
@@ -775,6 +978,10 @@ function renderDiffViewer() {
   elements.refreshDiffButton.disabled = !canView || (state.diffViewer.status === "loading" && isCurrentThread);
   elements.diffTitle.textContent = chat?.repo ? `${chat.repo} changes` : "Current changes";
 
+  if (!isDiffSheetOpen()) {
+    return;
+  }
+
   if (!chat) {
     elements.diffMeta.textContent = "Select a thread to load the latest Codex patch captured for it.";
     renderDiffBodyEmpty("Choose a chat first.");
@@ -827,6 +1034,10 @@ function renderDiffViewer() {
   renderDiffBodyEmpty("No Codex patch has been loaded for this thread yet.");
 }
 
+function isDiffSheetOpen() {
+  return elements.diffSheet.classList.contains("is-open");
+}
+
 function renderLogs() {
   const fragment = document.createDocumentFragment();
   for (const entry of state.logs) {
@@ -854,7 +1065,10 @@ async function createChat(folderName = selectedChat()?.repo || state.conversatio
 
   if (!state.client) {
     addLog("info", "Created a local draft thread.", folderName || "Workspace");
-    renderAll();
+    renderAfterChatStateChange({
+      includeDeckSummary: true,
+      includeLogs: true,
+    });
     return draftChat;
   }
 
@@ -868,7 +1082,10 @@ async function createChat(folderName = selectedChat()?.repo || state.conversatio
     return findChatByThreadId(draftChat.threadId) || draftChat;
   } catch (error) {
     addLog("warn", "Fell back to a local draft because thread/start failed.", error.message || "thread/start");
-    renderAll();
+    renderAfterChatStateChange({
+      includeDeckSummary: true,
+      includeLogs: true,
+    });
     return draftChat;
   }
 }
@@ -911,7 +1128,11 @@ function createLocalChat(folderName = selectedChat()?.repo || state.conversation
   if (render) {
     addLog("info", "Created a new local draft thread.", group.folder);
     pulseHaptic(12);
-    renderAll();
+    renderAfterChatStateChange({
+      includeDeckSummary: true,
+      includeDiffViewer: true,
+      includeLogs: true,
+    });
     focusComposer();
   }
   return chat;
@@ -939,7 +1160,10 @@ async function sendMessage() {
   persistThreadCacheForChat(chat);
   autosizeComposer();
   pulseHaptic(16);
-  renderAll();
+  renderAfterChatStateChange({
+    includeDeckSummary: true,
+    includeDiffViewer: true,
+  });
 
   if (!state.client) {
     addLog("warn", "Send stayed local because the browser client is not connected.", "local only");
@@ -967,6 +1191,7 @@ async function sendMessage() {
     renderLogs();
     state.connection = { detail: "Turn submitted. Waiting for turn notifications and refreshed thread state.", label: "Running turn", status: "ready" };
     renderConnection();
+    renderThreadSpotlight(chat);
 
     await state.client.startTurn(buildTurnStartParams({
       chat,
@@ -1172,16 +1397,16 @@ async function refreshDiffForSelectedChat() {
     sourceThreadId: chat.threadId,
     status: "loading",
     turnId: "",
-  };
-  renderDiffViewer();
+    };
+    renderDiffViewer();
 
-  try {
-    const result = await state.client.readThreadPatch(chat.threadId);
-    const patch = typeof result?.patch === "string" ? result.patch : "";
-    state.diffViewer = {
-      callId: result?.callId || "",
-      error: "",
-      loadedAt: result?.timestamp ? Date.parse(result.timestamp) || Date.now() : Date.now(),
+    try {
+      const result = await state.client.readThreadPatch(chat.threadId);
+      const patch = resolveDisplayPatchResult(result);
+      state.diffViewer = {
+        callId: result?.callId || "",
+        error: "",
+        loadedAt: result?.timestamp ? Date.parse(result.timestamp) || Date.now() : Date.now(),
       patch,
       sourceThreadId: chat.threadId,
       status: patch ? "ready" : "empty",
@@ -1211,7 +1436,7 @@ async function syncLatestPatchForChat(chat) {
 
   try {
     const result = await state.client.readThreadPatch(chat.threadId);
-    const patch = typeof result?.patch === "string" ? result.patch : "";
+    const patch = resolveDisplayPatchResult(result);
     if (!patch) {
       return;
     }
@@ -1344,11 +1569,18 @@ async function connectRelay({ restoreThread = false } = {}) {
     relayBaseUrl,
     onApplicationMessage() {},
     onConnectionState(connectionState) {
+      const connectionChanged = !isSameConnectionState(state.connection, connectionState);
       state.connection = connectionState;
       if (elements.scannerModal.classList.contains("is-open")) {
         setScannerStatus(`${connectionState.label}: ${connectionState.detail}`);
       }
+      if (!connectionChanged) {
+        return;
+      }
       renderConnection();
+      renderDeckSummary();
+      renderThreadSpotlight(selectedChat());
+      renderDiffViewer();
     },
     onLog(level, message, meta) {
       addLog(level, message, meta);
@@ -1385,6 +1617,9 @@ async function connectRelay({ restoreThread = false } = {}) {
     state.connection = { detail: error.message || "Failed to initialize the browser client.", label: "Connect failed", status: "error" };
     addLog("error", error.message || "Failed to initialize the browser client.", "connect");
     renderConnection();
+    renderDeckSummary();
+    renderThreadSpotlight(selectedChat());
+    renderDiffViewer();
     renderLogs();
   }
 }
@@ -1402,6 +1637,9 @@ async function disconnectRelay(silent) {
     };
     addLog("warn", "Disconnected the relay socket.", "manual");
     renderConnection();
+    renderDeckSummary();
+    renderThreadSpotlight(selectedChat());
+    renderDiffViewer();
     renderLogs();
   }
 }
@@ -1421,7 +1659,8 @@ async function applyPairing(payload, note, { autoConnect = false } = {}) {
     status: "warning",
   };
   addLog("info", note, payload.sessionId);
-  renderAll();
+  renderAfterPairingStateChange();
+  renderLogs();
   if (autoConnect) {
     await connectRelay();
     if (state.connection.status === "ready") {
@@ -1434,7 +1673,7 @@ async function applyPairing(payload, note, { autoConnect = false } = {}) {
 function updatePreference(key, value) {
   state.preferences[key] = value;
   persistPreferences();
-  renderAll();
+  renderAfterPreferenceChange();
 }
 
 function bindPreferenceSelect(select, key) {
@@ -1451,7 +1690,10 @@ async function mutateSelectedChat(mutate) {
     return;
   }
   await mutate(chat);
-  renderAll();
+  renderAfterChatStateChange({
+    includeDiffViewer: true,
+    includeSidebar: true,
+  });
 }
 
 async function syncThreadMetadata(chat) {
@@ -1473,13 +1715,66 @@ async function syncThreadMetadata(chat) {
 }
 
 function selectedChat() {
+  return findChatById(state.selectedChatId);
+}
+
+function findChatById(chatId) {
+  if (!chatId) {
+    return null;
+  }
+
   for (const group of state.conversations) {
-    const chat = group.chats.find((candidate) => candidate.id === state.selectedChatId);
+    const chat = group.chats.find((candidate) => candidate.id === chatId);
     if (chat) {
       return chat;
     }
   }
   return null;
+}
+
+function selectChatById(chatId, {
+  closeSidebar = true,
+  focusComposerInput = true,
+  hapticMs = 10,
+} = {}) {
+  const chat = findChatById(chatId);
+  if (!chat) {
+    return null;
+  }
+
+  const previousSelectedChatId = state.selectedChatId;
+  state.selectedChatId = chat.id;
+  applyThreadRuntimeToPreferences(chat);
+  if (closeSidebar) {
+    state.sidebarOpen = false;
+  }
+  if (isNarrowViewport()) {
+    state.mobileThreadOpen = true;
+  }
+  if (hapticMs > 0) {
+    pulseHaptic(hapticMs);
+  }
+
+  renderAfterChatSelection(previousSelectedChatId);
+  if (focusComposerInput) {
+    focusComposer();
+  }
+  if (chat.threadId && !chat.messagesLoaded) {
+    void readRemoteThread(chat.threadId);
+  }
+  return chat;
+}
+
+function renderAfterChatSelection(previousSelectedChatId = "") {
+  renderBody();
+  renderSelects();
+  syncSidebarSelection(previousSelectedChatId, state.selectedChatId);
+  renderConversation();
+  renderConnection();
+  renderRuntimeStrip();
+  renderDiffViewer();
+  autosizeComposer();
+  renderAppChrome();
 }
 
 async function refreshThreadList(preferredThreadId = state.selectedChatId) {
@@ -1498,7 +1793,10 @@ async function refreshThreadList(preferredThreadId = state.selectedChatId) {
     persistLastThreadId(state.selectedChatId);
   }
   applyThreadRuntimeToPreferences(selectedChat());
-  renderAll();
+  renderAfterChatStateChange({
+    includeDeckSummary: true,
+    includeDiffViewer: true,
+  });
   const chat = selectedChat();
   if (chat?.threadId) {
     await readRemoteThread(chat.threadId);
@@ -1539,7 +1837,11 @@ async function readRemoteThread(threadId) {
   }
   hydrateChatFromThread(chat, result.thread);
   await refreshThreadRuntime(chat);
-  renderAll();
+  renderAfterChatStateChange({
+    includeDeckSummary: true,
+    includeDiffViewer: true,
+    includeSidebar: true,
+  });
   await refreshBranchCatalog(chat);
 }
 
@@ -1591,7 +1893,11 @@ async function pollThreadUntilSettled(threadId, attemptsRemaining = 10) {
   const chat = findChatByThreadId(threadId);
   if (chat) {
     hydrateChatFromThread(chat, result.thread);
-    renderAll();
+    renderAfterChatStateChange({
+      includeDeckSummary: true,
+      includeDiffViewer: true,
+      includeSidebar: true,
+    });
   }
 
   const latestTurn = result.thread?.turns?.[result.thread.turns.length - 1];
@@ -2052,7 +2358,11 @@ function findChatByThreadId(threadId) {
 
 function ensureChatVisible(chat) {
   upsertChatIntoConversations(state.conversations, chat);
-  renderAll();
+  renderAfterChatStateChange({
+    includeDeckSummary: true,
+    includeDiffViewer: true,
+    includeSidebar: true,
+  });
 }
 
 function upsertChatIntoConversations(conversations, chat) {
@@ -2106,7 +2416,11 @@ async function submitBranchCreation() {
     await refreshBranchCatalog(chat);
     addLog("info", "Created git branch.", chat.branch);
     closeBranchSheet();
-    renderAll();
+    renderAfterChatStateChange({
+      includeDiffViewer: true,
+      includeSidebar: false,
+      includeLogs: true,
+    });
   } catch (error) {
     showBranchError(error.message || "Failed to create the branch.");
     addLog("error", error.message || "Failed to create the branch.", "git/createBranch");
@@ -3133,6 +3447,12 @@ function canViewDiffForChat(chat) {
 }
 
 function renderDiffBodyEmpty(message) {
+  const renderKey = `empty:${message}`;
+  if (elements.diffBody.dataset.renderKey === renderKey) {
+    return;
+  }
+
+  elements.diffBody.dataset.renderKey = renderKey;
   elements.diffBody.replaceChildren(createEmptyDiffState(message));
 }
 
@@ -3153,7 +3473,21 @@ function renderUnifiedDiff(container, patch) {
     return;
   }
 
-  container.replaceChildren(buildUnifiedDiffElement(patch));
+  const renderKey = `diff:${hashString(patch)}`;
+  if (container.dataset.renderKey === renderKey) {
+    return;
+  }
+
+  container.dataset.renderKey = renderKey;
+  renderUnifiedDiffInto(container, patch);
+}
+
+function resolveDisplayPatchResult(result) {
+  const displayPatch = typeof result?.displayPatch === "string" ? result.displayPatch : "";
+  if (displayPatch.trim()) {
+    return displayPatch;
+  }
+  return typeof result?.patch === "string" ? result.patch : "";
 }
 
 function buildDiffMeta({ threadId, turnId, callId, patch, loadedAt }) {
@@ -3349,18 +3683,17 @@ function handleSwipeEnd(event) {
   clearSwipePreview();
   if (completed) {
     pulseHaptic(10);
-    let chat = selectedChat();
     if (swipeGesture.mode === "open" && swipeGesture.chatId) {
-      state.selectedChatId = swipeGesture.chatId;
-      chat = selectedChat();
-      if (chat) {
-        applyThreadRuntimeToPreferences(chat);
-      }
-    }
-    state.mobileThreadOpen = swipeGesture.mode === "open";
-    renderAll();
-    if (state.mobileThreadOpen && chat?.threadId && !chat.messagesLoaded) {
-      void readRemoteThread(chat.threadId);
+      selectChatById(swipeGesture.chatId, {
+        closeSidebar: false,
+        focusComposerInput: false,
+        hapticMs: 0,
+      });
+    } else {
+      state.mobileThreadOpen = false;
+      renderBody();
+      renderConnection();
+      renderAppChrome();
     }
   }
   resetSwipeGesture();

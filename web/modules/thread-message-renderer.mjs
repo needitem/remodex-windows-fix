@@ -1,3 +1,7 @@
+const INLINE_PATCH_RENDER_MAX_LINES = 140;
+const DEFAULT_DIFF_RENDER_CHUNK_SIZE = 220;
+const DEFAULT_DIFF_RENDER_CHUNK_THRESHOLD = 220;
+
 export function renderMessageBubble(element, message, handlers = {}) {
   if (!element) {
     return;
@@ -96,13 +100,32 @@ export function renderMessageBubble(element, message, handlers = {}) {
     if (message.patch) {
       const details = document.createElement("details");
       details.className = "patch-details";
-      details.open = true;
+      const diffLineCount = countPatchLines(message.patch);
+      const shouldDeferInlineDiff = shouldDeferInlineDiffRender(message.patch);
+      details.open = !shouldDeferInlineDiff;
       const summaryLine = document.createElement("summary");
-      summaryLine.textContent = "Show Exact Diff";
+      summaryLine.textContent = shouldDeferInlineDiff
+        ? `Show Exact Diff (${diffLineCount} lines)`
+        : "Show Exact Diff";
       const diffBody = document.createElement("div");
       diffBody.className = "diff-body diff-body-inline";
-      const diffShell = buildUnifiedDiffElement(message.patch);
-      diffBody.append(diffShell);
+      const renderExactDiff = () => {
+        if (diffBody.childElementCount > 0) {
+          return;
+        }
+        renderUnifiedDiffInto(diffBody, message.patch);
+      };
+
+      if (!shouldDeferInlineDiff) {
+        renderExactDiff();
+      }
+
+      details.addEventListener("toggle", () => {
+        if (details.open) {
+          renderExactDiff();
+        }
+      });
+
       details.append(summaryLine, diffBody);
       element.append(details);
     }
@@ -113,37 +136,95 @@ export function renderMessageBubble(element, message, handlers = {}) {
 }
 
 export function buildUnifiedDiffElement(patch) {
-  const fragment = document.createDocumentFragment();
   const rows = buildUnifiedDiffRows(patch);
-
-  for (const parts of rows) {
-    const row = document.createElement("div");
-    row.className = `diff-line ${parts.className}`.trim();
-
-    const oldLine = document.createElement("span");
-    oldLine.className = "diff-line-number diff-line-number-old";
-    oldLine.textContent = parts.oldLineNumber;
-
-    const newLine = document.createElement("span");
-    newLine.className = "diff-line-number diff-line-number-new";
-    newLine.textContent = parts.newLineNumber;
-
-    const prefix = document.createElement("span");
-    prefix.className = "diff-line-prefix";
-    prefix.textContent = parts.prefix;
-
-    const text = document.createElement("span");
-    text.className = "diff-line-text";
-    text.textContent = parts.text;
-
-    row.append(oldLine, newLine, prefix, text);
-    fragment.append(row);
-  }
+  const fragment = buildUnifiedDiffFragment(rows);
 
   const shell = document.createElement("div");
   shell.className = "diff-lines";
   shell.append(fragment);
   return shell;
+}
+
+export function buildUnifiedDiffFragment(rows, documentLike = document) {
+  const fragment = documentLike.createDocumentFragment();
+
+  for (const parts of rows) {
+    const row = buildUnifiedDiffRowElement(parts, documentLike);
+    fragment.append(row);
+  }
+
+  return fragment;
+}
+
+export function buildUnifiedDiffChunkElement(rows, documentLike = document) {
+  const chunk = documentLike.createElement("div");
+  chunk.className = "diff-chunk";
+  chunk.append(buildUnifiedDiffFragment(rows, documentLike));
+  return chunk;
+}
+
+export function buildUnifiedDiffRowElement(parts, documentLike = document) {
+  const row = documentLike.createElement("div");
+  row.className = `diff-line ${parts.className}`.trim();
+
+  const oldLine = documentLike.createElement("span");
+  oldLine.className = "diff-line-number diff-line-number-old";
+  oldLine.textContent = parts.oldLineNumber;
+
+  const newLine = documentLike.createElement("span");
+  newLine.className = "diff-line-number diff-line-number-new";
+  newLine.textContent = parts.newLineNumber;
+
+  const prefix = documentLike.createElement("span");
+  prefix.className = "diff-line-prefix";
+  prefix.textContent = parts.prefix;
+
+  const text = documentLike.createElement("span");
+  text.className = "diff-line-text";
+  text.textContent = parts.text;
+
+  row.append(oldLine, newLine, prefix, text);
+  return row;
+}
+
+export function renderUnifiedDiffInto(container, patch, {
+  chunkSize = DEFAULT_DIFF_RENDER_CHUNK_SIZE,
+  chunkThreshold = DEFAULT_DIFF_RENDER_CHUNK_THRESHOLD,
+  documentLike = document,
+  frameScheduler = resolveFrameScheduler(),
+} = {}) {
+  if (!container) {
+    return;
+  }
+
+  const rows = buildUnifiedDiffRows(patch);
+  const shell = documentLike.createElement("div");
+  shell.className = "diff-lines";
+  container.replaceChildren(shell);
+
+  if (rows.length <= chunkThreshold) {
+    shell.append(buildUnifiedDiffFragment(rows, documentLike));
+    return;
+  }
+
+  const renderToken = Symbol("diff-render");
+  container.__remodexDiffRenderToken = renderToken;
+  const rowChunks = splitDiffRowsIntoChunks(rows, chunkSize);
+  let chunkIndex = 0;
+
+  const renderNextChunk = () => {
+    if (container.__remodexDiffRenderToken !== renderToken) {
+      return;
+    }
+
+    shell.append(buildUnifiedDiffChunkElement(rowChunks[chunkIndex] || [], documentLike));
+    chunkIndex += 1;
+    if (chunkIndex < rowChunks.length) {
+      frameScheduler(renderNextChunk);
+    }
+  };
+
+  renderNextChunk();
 }
 
 export function buildUnifiedDiffRows(patch) {
@@ -238,6 +319,29 @@ export function buildPatchPreview(patch) {
   }
 
   return "Exact patch captured.";
+}
+
+export function countPatchLines(patch) {
+  const normalizedPatch = String(patch || "").replace(/\r/g, "");
+  if (!normalizedPatch) {
+    return 0;
+  }
+  return normalizedPatch.split("\n").length;
+}
+
+export function shouldDeferInlineDiffRender(patch, maxLines = INLINE_PATCH_RENDER_MAX_LINES) {
+  return countPatchLines(patch) > maxLines;
+}
+
+export function splitDiffRowsIntoChunks(rows, chunkSize = DEFAULT_DIFF_RENDER_CHUNK_SIZE) {
+  const normalizedChunkSize = Number.isFinite(chunkSize) && chunkSize > 0 ? Math.floor(chunkSize) : DEFAULT_DIFF_RENDER_CHUNK_SIZE;
+  const chunks = [];
+
+  for (let index = 0; index < rows.length; index += normalizedChunkSize) {
+    chunks.push(rows.slice(index, index + normalizedChunkSize));
+  }
+
+  return chunks;
 }
 
 function renderPlanBubble(element, message) {
@@ -639,6 +743,14 @@ function formatDiffLineNumber(value) {
 
 function incrementDiffLineNumber(value) {
   return Number.isFinite(value) ? value + 1 : value;
+}
+
+function resolveFrameScheduler() {
+  if (typeof window !== "undefined" && typeof window.requestAnimationFrame === "function") {
+    return window.requestAnimationFrame.bind(window);
+  }
+
+  return (callback) => setTimeout(callback, 16);
 }
 
 function cssEscape(value) {

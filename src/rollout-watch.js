@@ -7,6 +7,7 @@
 const fs = require("fs");
 const os = require("os");
 const path = require("path");
+const { buildDisplayPatchFromApplyPatch } = require("./apply-patch-display");
 const { readLastActiveThread } = require("./session-state");
 
 const DEFAULT_WATCH_INTERVAL_MS = 1_000;
@@ -883,6 +884,7 @@ function readLatestApplyPatchFromRolloutFile(
 
     latestPatch = {
       callId: readNonEmptyString(payload.call_id) || null,
+      displayPatch: buildDisplayPatchFromApplyPatch(patch, { fsModule }),
       patch,
       timestamp: readNonEmptyString(parsed.timestamp) || null,
       turnId: currentTurnId || null,

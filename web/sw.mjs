@@ -1,4 +1,4 @@
-const CACHE_NAME = "remodex-web-deck-v12";
+const CACHE_NAME = "remodex-web-deck-v17";
 const APP_SHELL_URLS = [
   "/app/",
   "/app/bootstrap.mjs",
@@ -16,6 +16,7 @@ const APP_SHELL_URLS = [
   "/app/modules/mobile-dock-state.mjs",
   "/app/modules/pairing.mjs",
   "/app/modules/preferences.mjs",
+  "/app/modules/sidebar-render-state.mjs",
   "/app/modules/storage.mjs",
   "/app/modules/thread-chat-state.mjs",
   "/app/modules/thread-collaboration-state.mjs",

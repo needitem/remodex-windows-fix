@@ -128,6 +128,7 @@ async function handleThreadPatchRead(params) {
     threadId,
     turnId: result?.turnId ?? null,
     callId: result?.callId ?? null,
+    displayPatch: result?.displayPatch ?? null,
     patch: result?.patch ?? null,
     rolloutPath: result?.rolloutPath ?? null,
     timestamp: result?.timestamp ?? null,

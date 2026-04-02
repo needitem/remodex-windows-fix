@@ -9,8 +9,12 @@ const assert = require("node:assert/strict");
 
 test("patch renderer helpers summarize totals and list changed files", async () => {
   const {
+    buildUnifiedDiffChunkElement,
     buildUnifiedDiffRows,
     buildPatchPreview,
+    countPatchLines,
+    splitDiffRowsIntoChunks,
+    shouldDeferInlineDiffRender,
     summarizePatchForDisplay,
   } = await import("../web/modules/thread-message-renderer.mjs");
 
@@ -49,4 +53,45 @@ test("patch renderer helpers summarize totals and list changed files", async () 
       { oldLineNumber: "", newLineNumber: "11", prefix: "+", text: "const ready = true;" },
     ]
   );
+
+  assert.equal(countPatchLines(patch), 12);
+  assert.equal(shouldDeferInlineDiffRender(patch, 8), true);
+  assert.equal(shouldDeferInlineDiffRender(patch, 16), false);
+  assert.deepEqual(
+    splitDiffRowsIntoChunks(buildUnifiedDiffRows(patch), 5).map((chunk) => chunk.length),
+    [5, 5, 2]
+  );
+
+  const documentLike = {
+    createDocumentFragment() {
+      return {
+        children: [],
+        append(...nodes) {
+          this.children.push(...nodes);
+        },
+        get childElementCount() {
+          return this.children.length;
+        },
+      };
+    },
+    createElement(tagName) {
+      return {
+        tagName,
+        children: [],
+        className: "",
+        textContent: "",
+        append(...nodes) {
+          this.children.push(...nodes);
+        },
+        get childElementCount() {
+          return this.children.length;
+        },
+      };
+    },
+  };
+
+  const chunkElement = buildUnifiedDiffChunkElement(buildUnifiedDiffRows(patch).slice(0, 2), documentLike);
+  assert.equal(chunkElement.className, "diff-chunk");
+  assert.equal(chunkElement.childElementCount, 1);
+  assert.equal(chunkElement.children[0].childElementCount, 2);
 });
