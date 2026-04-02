@@ -14,6 +14,7 @@ export function createBrowserBridgeClient({
   onConnectionState = () => {},
   onLog = () => {},
   onNotification = () => {},
+  onServerRequest = () => {},
 } = {}) {
   const secureTransport = createBrowserSecureTransport({ pairingPayload });
   const pendingRequests = new Map();
@@ -115,6 +116,28 @@ export function createBrowserBridgeClient({
     async startTurn(params = {}) {
       await readyPromise;
       return request("turn/start", params);
+    },
+    async respondToServerRequest(id, result = {}) {
+      await securePromise;
+      await secureTransport.sendApplicationPayload(JSON.stringify({ id, result }));
+    },
+    async rejectServerRequest(id, {
+      code = -32603,
+      data,
+      message = "Request failed.",
+    } = {}) {
+      await securePromise;
+      const payload = {
+        error: {
+          code,
+          message,
+        },
+        id,
+      };
+      if (data !== undefined) {
+        payload.error.data = data;
+      }
+      await secureTransport.sendApplicationPayload(JSON.stringify(payload));
     },
     async updateThreadMetadata(threadId, gitInfo = null) {
       await readyPromise;
@@ -323,6 +346,11 @@ export function createBrowserBridgeClient({
   function handleApplicationPayload(payloadText) {
     const parsed = safeParseJSON(payloadText);
     if (!parsed || typeof parsed !== "object") {
+      return;
+    }
+
+    if (typeof parsed.method === "string" && parsed.id != null) {
+      onServerRequest(parsed);
       return;
     }
 

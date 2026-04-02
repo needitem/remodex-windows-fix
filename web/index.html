@@ -9,9 +9,9 @@
   <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
   <meta name="apple-mobile-web-app-title" content="Remodex">
   <title>Remodex Web</title>
-  <link rel="manifest" href="./manifest.webmanifest?v=20260323e">
+  <link rel="manifest" href="./manifest.webmanifest?v=20260402a">
   <link rel="icon" href="./icon.svg" type="image/svg+xml">
-  <link rel="stylesheet" href="./styles.css?v=20260323e">
+  <link rel="stylesheet" href="./styles.css?v=20260402a">
 </head>
 <body>
   <a class="skip-link" href="#main-content">Skip to main content</a>
@@ -279,7 +279,11 @@
           <div class="settings-field static-field">
             <span>Status</span>
             <strong id="push-status-label">Browser default</strong>
-            <p>Web Push is not wired yet. This stays as a placeholder for the PWA flow.</p>
+            <p id="notification-status-copy">Ask for permission to receive completion and approval alerts.</p>
+          </div>
+          <div class="settings-actions">
+            <button id="notification-toggle-button" class="mini-button" type="button">Enable Alerts</button>
+            <button id="notification-test-button" class="mini-button mini-button-subtle" type="button">Send Test Alert</button>
           </div>
         </div>
       </section>
@@ -386,9 +390,36 @@
     </div>
   </aside>
 
+  <aside class="branch-sheet" id="branch-sheet" aria-hidden="true" inert>
+    <div class="branch-panel">
+      <header class="branch-header">
+        <div>
+          <p class="eyebrow eyebrow-muted">Git Branch</p>
+          <h2>Create a branch</h2>
+          <p id="branch-context" class="diff-meta">Choose a name for the next working branch.</p>
+        </div>
+        <button id="close-branch-button" class="icon-button" type="button" aria-label="Close branch dialog">
+          <span></span>
+          <span></span>
+        </button>
+      </header>
+      <form id="branch-form" class="branch-form">
+        <label class="settings-field">
+          <span>Branch Name</span>
+          <input id="branch-name-input" type="text" autocomplete="off" spellcheck="false" placeholder="web/repo-main-update">
+        </label>
+        <p id="branch-error" class="branch-error" aria-live="polite"></p>
+        <div class="branch-actions">
+          <button id="branch-submit-button" class="mini-button" type="submit">Create Branch</button>
+          <button id="branch-cancel-button" class="mini-button mini-button-subtle" type="button">Cancel</button>
+        </div>
+      </form>
+    </div>
+  </aside>
+
   <input id="pairing-file-input" type="file" accept=".json,application/json,image/*" hidden>
   <input id="camera-capture-input" type="file" accept="image/*" capture="environment" hidden>
-  <script src="./vendor/jsqr.js?v=20260323e"></script>
-  <script type="module" src="./bootstrap.mjs?v=20260323e"></script>
+  <script src="./vendor/jsqr.js?v=20260402a"></script>
+  <script type="module" src="./bootstrap.mjs?v=20260402a"></script>
 </body>
 </html>

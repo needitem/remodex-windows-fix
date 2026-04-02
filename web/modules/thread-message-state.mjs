@@ -39,6 +39,20 @@ export function extractMessagesFromThread(thread) {
           rawOutput,
           text: "",
         });
+      } else if (item.type === "plan") {
+        const text = normalizePlanText(item);
+        messages.push({
+          author: "Plan",
+          id: item.id || `plan:${turn.id || turn.turnId || messages.length}:${messages.length}`,
+          kind: "plan",
+          planState: {
+            explanation: normalizePlanExplanation(item.explanation),
+            steps: normalizePlanSteps(item.plan, turn.status),
+          },
+          role: "assistant",
+          text,
+          time: turn.status === "completed" ? "completed" : "running",
+        });
       } else if (item.type === "reasoning" && item.summary?.length) {
         messages.push({
           id: item.id || `reasoning:${turn.id || turn.turnId || messages.length}:${messages.length}`,
@@ -241,6 +255,60 @@ function messageTimeRank(value) {
       return 1;
     default:
       return 0;
+  }
+}
+
+function normalizePlanText(item) {
+  const contentItems = Array.isArray(item?.content) ? item.content : [];
+  const textParts = contentItems
+    .filter((entry) => entry?.type === "text" && typeof entry.text === "string")
+    .map((entry) => entry.text.trim())
+    .filter(Boolean);
+  if (textParts.length) {
+    return textParts.join("\n\n");
+  }
+  return normalizePlanExplanation(item?.explanation) || "Plan updated.";
+}
+
+function normalizePlanExplanation(value) {
+  const normalized = typeof value === "string" ? value.trim() : "";
+  return normalized || "";
+}
+
+function normalizePlanSteps(value, turnStatus) {
+  const items = Array.isArray(value) ? value : [];
+  const steps = items
+    .map((entry) => ({
+      status: normalizePlanStepStatus(entry?.status, turnStatus),
+      step: typeof entry?.step === "string" ? entry.step.trim() : "",
+    }))
+    .filter((entry) => entry.step);
+
+  if (turnStatus === "completed") {
+    return steps.map((entry) => ({
+      ...entry,
+      status: "completed",
+    }));
+  }
+
+  return steps;
+}
+
+function normalizePlanStepStatus(value, turnStatus) {
+  const normalized = String(value || "").trim().toLowerCase();
+  if (turnStatus === "completed") {
+    return "completed";
+  }
+  switch (normalized) {
+    case "completed":
+    case "done":
+      return "completed";
+    case "inprogress":
+    case "in_progress":
+    case "running":
+      return "in_progress";
+    default:
+      return "pending";
   }
 }
 

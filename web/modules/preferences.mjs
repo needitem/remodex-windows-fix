@@ -11,6 +11,7 @@ export function loadPreferences({
     font: "system",
     glass: true,
     model: "GPT-5.4",
+    notifications: true,
     reasoning: "Extra High",
     speed: "Normal",
   };
@@ -22,6 +23,7 @@ export function loadPreferences({
       font: parsed.font === "rounded" ? "rounded" : fallback.font,
       glass: parsed.glass !== false,
       model: modelOptions?.includes(parsed.model) ? parsed.model : fallback.model,
+      notifications: parsed.notifications !== false,
       reasoning: reasoningOptions?.includes(parsed.reasoning) ? parsed.reasoning : fallback.reasoning,
       speed: speedOptions?.includes(parsed.speed) ? parsed.speed : fallback.speed,
     };

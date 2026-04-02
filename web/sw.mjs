@@ -1,6 +1,7 @@
-const CACHE_NAME = "remodex-web-deck-v5";
+const CACHE_NAME = "remodex-web-deck-v7";
 const APP_SHELL_URLS = [
   "/app/",
+  "/app/bootstrap.mjs",
   "/app/styles.css",
   "/app/main.mjs",
   "/app/manifest.webmanifest",
@@ -8,14 +9,23 @@ const APP_SHELL_URLS = [
   "/app/vendor/jsqr.js",
   "/app/modules/browser-relay-client.mjs",
   "/app/modules/browser-bridge-client.mjs",
+  "/app/modules/browser-notifications.mjs",
   "/app/modules/browser-secure-transport.mjs",
   "/app/modules/capabilities.mjs",
   "/app/modules/mock-data.mjs",
+  "/app/modules/mobile-dock-state.mjs",
   "/app/modules/pairing.mjs",
   "/app/modules/preferences.mjs",
   "/app/modules/qr-decoder.mjs",
   "/app/modules/scanner-controller.mjs",
   "/app/modules/storage.mjs",
+  "/app/modules/thread-chat-state.mjs",
+  "/app/modules/thread-collaboration-state.mjs",
+  "/app/modules/thread-command-state.mjs",
+  "/app/modules/thread-conversation-state.mjs",
+  "/app/modules/thread-message-renderer.mjs",
+  "/app/modules/thread-message-state.mjs",
+  "/app/modules/thread-send.mjs",
 ];
 
 self.addEventListener("install", (event) => {

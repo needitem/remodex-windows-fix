@@ -1,5 +1,11 @@
 import { inferRelayBaseUrl } from "./modules/browser-relay-client.mjs";
 import { createBrowserBridgeClient } from "./modules/browser-bridge-client.mjs";
+import {
+  describeBrowserNotificationPermission,
+  getBrowserNotificationState,
+  requestBrowserNotificationPermission,
+  sendBrowserNotification,
+} from "./modules/browser-notifications.mjs";
 import { collectBrowserCapabilities } from "./modules/capabilities.mjs";
 import { decodePairingPayloadFromFile, describePairingPayload, parsePairingPayload } from "./modules/pairing.mjs";
 import {
@@ -31,11 +37,34 @@ import {
   summarizeCommandForDisplay,
 } from "./modules/thread-message-state.mjs";
 import {
+  applyPlanDelta,
+  applyTurnPlanUpdated,
+  buildStructuredUserInputResponse,
+  chatHasBlockingServerRequest,
+  ensurePlanMessage,
+  finalizePlanMessages,
+  normalizePlanExplanation,
+  normalizePlanItemText,
+  normalizePlanSteps,
+  rememberThreadTurnMapping,
+  resolveServerRequestInChats,
+  resolveThreadIdFromParams,
+  resolveTurnIdFromParams,
+  upsertApprovalRequest,
+  upsertStructuredUserInputRequest,
+} from "./modules/thread-collaboration-state.mjs";
+import {
   applyExecCommandBegin,
   applyExecCommandEnd,
   applyExecCommandOutput,
   buildCommandRawContent,
 } from "./modules/thread-command-state.mjs";
+import {
+  buildPatchPreview,
+  buildUnifiedDiffElement,
+  renderMessageBubble,
+  summarizePatchForDisplay,
+} from "./modules/thread-message-renderer.mjs";
 import {
   adoptRemoteThreadForChat as adoptRemoteThreadForChatModel,
   hydrateChatFromThread as hydrateChatFromThreadModel,
@@ -87,6 +116,7 @@ const state = {
   selectedChatId: loadStoredLastThreadId(),
   sidebarOpen: false,
   threadCache: loadStoredThreadCache(),
+  threadIdByTurnId: {},
   mobileThreadOpen: false,
 };
 
@@ -108,9 +138,6 @@ const swipeGesture = {
 void init();
 
 async function init() {
-  if (await cleanupLegacyAppShell()) {
-    return;
-  }
   seedLogs();
   wireEvents();
   renderAll();
@@ -128,8 +155,16 @@ function mapElements() {
     deckSummaryStatus: document.querySelector("#deck-summary-status"),
     deckSummaryTitle: document.querySelector("#deck-summary-title"),
     body: document.body,
+    branchContext: document.querySelector("#branch-context"),
+    branchCancelButton: document.querySelector("#branch-cancel-button"),
+    branchError: document.querySelector("#branch-error"),
+    branchForm: document.querySelector("#branch-form"),
+    branchNameInput: document.querySelector("#branch-name-input"),
+    branchSheet: document.querySelector("#branch-sheet"),
+    branchSubmitButton: document.querySelector("#branch-submit-button"),
     branchSelect: document.querySelector("#branch-select"),
     cameraCaptureInput: document.querySelector("#camera-capture-input"),
+    closeBranchButton: document.querySelector("#close-branch-button"),
     clearPairingButton: document.querySelector("#clear-pairing-button"),
     closeDiffButton: document.querySelector("#close-diff-button"),
     closeScannerButton: document.querySelector("#close-scanner-button"),
@@ -165,6 +200,9 @@ function mapElements() {
     mobileScanDockButton: document.querySelector("#mobile-scan-dock-button"),
     mobileSettingsDockButton: document.querySelector("#mobile-settings-dock-button"),
     newChatButton: document.querySelector("#new-chat-button"),
+    notificationStatusCopy: document.querySelector("#notification-status-copy"),
+    notificationTestButton: document.querySelector("#notification-test-button"),
+    notificationToggleButton: document.querySelector("#notification-toggle-button"),
     openScannerButton: document.querySelector("#open-scanner-button"),
     openSettingsButton: document.querySelector("#open-settings-button"),
     pairingFileInput: document.querySelector("#pairing-file-input"),
@@ -226,6 +264,12 @@ function wireEvents() {
   elements.mobileScanDockButton?.addEventListener("click", openScanner);
   elements.mobileSettingsDockButton?.addEventListener("click", openSettings);
   elements.createBranchButton.addEventListener("click", createBranch);
+  elements.branchForm?.addEventListener("submit", (event) => {
+    event.preventDefault();
+    void submitBranchCreation();
+  });
+  elements.closeBranchButton?.addEventListener("click", closeBranchSheet);
+  elements.branchCancelButton?.addEventListener("click", closeBranchSheet);
   elements.sendButton.addEventListener("click", sendMessage);
   elements.threadDiffButton.addEventListener("click", () => { void openDiff(); });
   elements.refreshDiffButton.addEventListener("click", () => { void refreshDiffForSelectedChat(); });
@@ -257,6 +301,8 @@ function wireEvents() {
   bindPreferenceSelect(elements.settingsAccessSelect, "access");
   elements.fontSelect.addEventListener("change", (event) => updatePreference("font", event.target.value));
   elements.glassToggle.addEventListener("change", (event) => updatePreference("glass", event.target.checked));
+  elements.notificationToggleButton?.addEventListener("click", () => { void toggleBrowserNotifications(); });
+  elements.notificationTestButton?.addEventListener("click", () => { void sendTestBrowserNotification(); });
   elements.openSettingsButton.addEventListener("click", openSettings);
   elements.headerSettingsButton.addEventListener("click", openSettings);
   elements.closeSettingsButton.addEventListener("click", closeSettings);
@@ -266,6 +312,7 @@ function wireEvents() {
   elements.closeScannerButton.addEventListener("click", closeScanner);
   elements.scannerModal.addEventListener("click", (event) => { if (event.target === elements.scannerModal) { closeScanner(); } });
   elements.diffSheet.addEventListener("click", (event) => { if (event.target === elements.diffSheet) { closeDiff(); } });
+  elements.branchSheet?.addEventListener("click", (event) => { if (event.target === elements.branchSheet) { closeBranchSheet(); } });
   elements.scannerStartButton.addEventListener("click", startScanner);
   elements.scannerImportButton.addEventListener("click", () => elements.pairingFileInput.click());
   elements.cameraCaptureInput.addEventListener("change", importPairingFile);
@@ -446,7 +493,13 @@ function renderConversation() {
     const pendingClass = message.pending ? "is-pending" : "";
     card.className = `message-card ${message.role === "user" ? "user" : "assistant"} ${originClass} ${kindClass} ${pendingClass}`.trim();
     card.innerHTML = `<div class="message-meta"><span>${escapeHTML(message.author)}</span><span>|</span><span>${escapeHTML(message.time)}</span><span class="message-origin-badge ${originBadgeClass(message.origin)}">${escapeHTML(originBadgeLabel(message.origin))}</span></div><div class="message-bubble"></div>`;
-    renderMessageBubble(card.querySelector(".message-bubble"), message);
+    renderMessageBubble(card.querySelector(".message-bubble"), message, {
+      buildCommandPreview,
+      buildCommandRawContent,
+      onSubmitApproval: submitApprovalDecision,
+      onSubmitStructuredInput: submitStructuredUserInputResponse,
+      summarizeCommandForDisplay,
+    });
     fragment.append(card);
   }
   elements.messageList.replaceChildren(fragment);
@@ -477,7 +530,7 @@ function renderConnection() {
     : state.connection.detail;
   elements.connectionDot.className = "connection-dot";
   elements.connectionDot.classList.add(`state-${state.connection.status}`);
-  elements.composerStatus.textContent = state.connection.label;
+  elements.composerStatus.textContent = composerStatusLabel(selectedChat());
   renderDeckSummary();
   renderThreadSpotlight(selectedChat());
   renderDiffViewer();
@@ -563,25 +616,48 @@ function renderThreadSpotlight(chat) {
 
 function renderComposerState(chat) {
   const hasPendingTurn = chatHasPendingTurn(chat);
+  const hasBlockingRequest = chatHasBlockingServerRequest(chat);
   const isSharedView = messageOriginForChat(chat) === "shared";
-  elements.sendButton.disabled = !chat || hasPendingTurn;
+  const isBusy = hasPendingTurn || hasBlockingRequest;
+  elements.sendButton.disabled = !chat || isBusy;
   elements.sendButton.dataset.loading = hasPendingTurn ? "true" : "false";
-  elements.sendButton.setAttribute("aria-busy", hasPendingTurn ? "true" : "false");
-  elements.sendButton.textContent = hasPendingTurn ? "Running..." : (!chat ? "Select Chat" : (isSharedView ? "Fork & Send" : "Send"));
+  elements.sendButton.setAttribute("aria-busy", isBusy ? "true" : "false");
+  elements.sendButton.textContent = hasPendingTurn
+    ? "Running..."
+    : (hasBlockingRequest
+      ? "Needs Response"
+      : (!chat ? "Select Chat" : (isSharedView ? "Fork & Send" : "Send")));
   elements.composerInput.placeholder = !chat
     ? "Choose a chat or create a local draft to start sending."
     : (hasPendingTurn
       ? "Wait for the current turn to finish before sending another prompt."
+      : (hasBlockingRequest
+        ? "Resolve the active approval or questionnaire card before sending a new prompt."
       : (isSharedView
         ? "This shared thread is read-only here. Sending will fork into an isolated web thread."
-        : "Ask anything... @files, $skills, /commands"));
+        : "Ask anything... @files, $skills, /commands")));
+  elements.composerStatus.textContent = composerStatusLabel(chat);
 }
 
 function renderSettings() {
   elements.fontSelect.value = state.preferences.font;
   elements.glassToggle.checked = state.preferences.glass;
-  const pushCapability = state.capabilities.items.find((item) => item.label === "Web Push");
-  elements.pushStatusLabel.textContent = pushCapability && pushCapability.detail.includes("exist") ? "Supported" : "Unavailable";
+  const notificationState = getBrowserNotificationState(window, navigator);
+  const notificationsEnabled = notificationState.permission === "granted" && state.preferences.notifications !== false;
+
+  elements.pushStatusLabel.textContent = describeBrowserNotificationPermission(notificationState.permission);
+  if (elements.notificationStatusCopy) {
+    elements.notificationStatusCopy.textContent = describeNotificationStatusCopy(notificationState);
+  }
+  if (elements.notificationToggleButton) {
+    elements.notificationToggleButton.disabled = !notificationState.supported;
+    elements.notificationToggleButton.textContent = notificationState.permission === "granted"
+      ? (notificationsEnabled ? "Pause Alerts" : "Enable Alerts")
+      : "Enable Alerts";
+  }
+  if (elements.notificationTestButton) {
+    elements.notificationTestButton.disabled = !(notificationState.permission === "granted" && notificationsEnabled);
+  }
 }
 
 function renderDiffViewer() {
@@ -856,6 +932,43 @@ function closeSettings() {
   renderAppChrome();
 }
 
+function openBranchSheet() {
+  const chat = selectedChat();
+  if (!elements.branchSheet) {
+    return;
+  }
+
+  if (elements.branchError) {
+    elements.branchError.textContent = "";
+  }
+  if (elements.branchContext) {
+    elements.branchContext.textContent = chat?.cwd
+      ? `${chat.repo || "Workspace"} | ${chat.branch || "main"} | ${truncate(chat.cwd, 72)}`
+      : `${chat?.repo || "Workspace"} | ${chat?.branch || "main"}`;
+  }
+  if (elements.branchNameInput) {
+    elements.branchNameInput.value = suggestBranchName(chat);
+  }
+  if (elements.branchSubmitButton) {
+    elements.branchSubmitButton.disabled = false;
+    elements.branchSubmitButton.textContent = "Create Branch";
+  }
+
+  pulseHaptic(10);
+  openModal(elements.branchSheet);
+  renderAppChrome();
+
+  window.requestAnimationFrame(() => {
+    elements.branchNameInput?.focus();
+    elements.branchNameInput?.select();
+  });
+}
+
+function closeBranchSheet() {
+  closeModal(elements.branchSheet);
+  renderAppChrome();
+}
+
 function openScanner() {
   pulseHaptic(10);
   openModal(elements.scannerModal);
@@ -893,6 +1006,53 @@ async function openDiff() {
 function closeDiff() {
   closeModal(elements.diffSheet);
   renderAppChrome();
+}
+
+async function toggleBrowserNotifications() {
+  const notificationState = getBrowserNotificationState(window, navigator);
+  if (!notificationState.supported) {
+    addLog("warn", "This browser does not support notifications.", "notifications");
+    renderLogs();
+    return;
+  }
+
+  if (notificationState.permission === "denied") {
+    addLog("warn", "Notifications are blocked in browser settings for this browser shell.", "notifications");
+    renderLogs();
+    renderSettings();
+    return;
+  }
+
+  if (notificationState.permission !== "granted") {
+    const permission = await requestBrowserNotificationPermission(window);
+    if (permission === "granted") {
+      state.preferences.notifications = true;
+      persistPreferences();
+      addLog("info", "Browser notifications enabled.", "notifications");
+    } else {
+      addLog("warn", "Notification permission was not granted.", "notifications");
+    }
+    renderLogs();
+    renderSettings();
+    return;
+  }
+
+  state.preferences.notifications = !state.preferences.notifications;
+  persistPreferences();
+  addLog("info", state.preferences.notifications ? "Browser notifications resumed." : "Browser notifications paused.", "notifications");
+  renderLogs();
+  renderSettings();
+}
+
+async function sendTestBrowserNotification() {
+  const delivered = await dispatchBrowserNotification({
+    body: "Completion, approval, and plan prompts will use this channel.",
+    requireHidden: false,
+    tag: "remodex-web:test",
+    title: "Remodex Web alerts",
+  });
+  addLog(delivered ? "info" : "warn", delivered ? "Delivered a test notification." : "Could not deliver a test notification.", "notifications");
+  renderLogs();
 }
 
 async function refreshDiffForSelectedChat() {
@@ -1083,6 +1243,9 @@ async function connectRelay({ restoreThread = false } = {}) {
     },
     onNotification(notification) {
       handleNotification(notification);
+    },
+    onServerRequest(request) {
+      handleServerRequest(request);
     },
   });
 
@@ -1327,6 +1490,35 @@ async function pollThreadUntilSettled(threadId, attemptsRemaining = 10) {
   await pollThreadUntilSettled(threadId, attemptsRemaining - 1);
 }
 
+function handleServerRequest(request) {
+  const method = typeof request?.method === "string" ? request.method : "";
+  if (!method) {
+    return;
+  }
+
+  if (method === "item/tool/requestUserInput" || method === "tool/requestUserInput") {
+    applyStructuredUserInputRequest(request.id, request.params);
+    return;
+  }
+
+  if (
+    method === "item/commandExecution/requestApproval"
+    || method === "item/fileChange/requestApproval"
+    || method.endsWith("requestApproval")
+  ) {
+    applyApprovalRequest(request.id, method, request.params);
+    return;
+  }
+
+  void state.client?.rejectServerRequest(request.id, {
+    code: -32601,
+    message: `Unsupported request method: ${method}`,
+  }).catch((error) => {
+    addLog("error", error.message || "Failed to reject an unsupported server request.", method);
+    renderLogs();
+  });
+}
+
 function handleNotification(notification) {
   const method = typeof notification.method === "string" ? notification.method : "";
   if (!method) {
@@ -1351,6 +1543,21 @@ function handleNotification(notification) {
 
   if (method === "commandExecution/outputDelta") {
     applyCommandOutputDeltaNotification(notification.params);
+    return;
+  }
+
+  if (method === "turn/plan/updated") {
+    applyTurnPlanUpdatedNotification(notification.params);
+    return;
+  }
+
+  if (method === "item/plan/delta") {
+    applyPlanDeltaNotification(notification.params);
+    return;
+  }
+
+  if (method === "serverRequest/resolved") {
+    applyServerRequestResolvedNotification(notification.params);
     return;
   }
 
@@ -1395,19 +1602,29 @@ function handleNotification(notification) {
   }
 
   if (method === "turn/completed") {
-    const threadId = notification.params?.threadId || notification.params?.thread?.id || notification.params?.thread?.threadId;
+    const threadId = resolveThreadIdFromParams(notification.params, state.threadIdByTurnId);
+    const turnId = resolveTurnIdFromParams(notification.params, { allowTopLevelId: true });
+    rememberThreadTurnMapping(state.threadIdByTurnId, threadId, turnId);
     if (threadId) {
       const chat = findChatByThreadId(threadId);
       if (chat) {
         chat.messages = chat.messages.filter((message) => !message.pending);
+        finalizePlanMessages(chat, turnId);
         persistThreadCacheForChat(chat);
         schedulePatchCapture(threadId);
+        void dispatchBrowserNotification({
+          body: `${chat.title || "Thread"} is ready.`,
+          tag: `remodex-web:turn:${threadId}`,
+          title: "Turn completed",
+        });
       }
     }
   }
 
   if (method === "turn/started") {
-    const threadId = notification.params?.threadId || notification.params?.thread?.id || notification.params?.thread?.threadId;
+    const threadId = resolveThreadIdFromParams(notification.params, state.threadIdByTurnId);
+    const turnId = resolveTurnIdFromParams(notification.params, { allowTopLevelId: true });
+    rememberThreadTurnMapping(state.threadIdByTurnId, threadId, turnId);
     if (threadId) {
       const chat = findChatByThreadId(threadId);
       if (chat) {
@@ -1437,6 +1654,109 @@ function handleNotification(notification) {
       void refreshDiffForSelectedChat();
     }
     scheduleRefresh(threadId || selectedChat()?.threadId || null);
+  }
+}
+
+function applyStructuredUserInputRequest(requestId, params) {
+  const update = upsertStructuredUserInputRequest({
+    findChatByThreadId,
+    messageOriginForChat,
+    params,
+    requestId,
+    threadIdByTurnId: state.threadIdByTurnId,
+  });
+  if (!update) {
+    return;
+  }
+
+  const { chat, requestId: normalizedRequestId } = update;
+  persistThreadCacheForChat(chat);
+  if (selectedChat()?.id === chat.id) {
+    renderConversation();
+  }
+  void dispatchBrowserNotification({
+    body: `${chat.title || "Thread"} needs a quick answer before it can continue.`,
+    tag: `remodex-web:request:${normalizedRequestId}`,
+    title: "Plan input needed",
+  });
+}
+
+function applyApprovalRequest(requestId, method, params) {
+  const update = upsertApprovalRequest({
+    findChatByThreadId,
+    messageOriginForChat,
+    method,
+    params,
+    requestId,
+    threadIdByTurnId: state.threadIdByTurnId,
+  });
+  if (!update) {
+    return;
+  }
+
+  const { chat, message, requestId: normalizedRequestId } = update;
+  persistThreadCacheForChat(chat);
+  if (selectedChat()?.id === chat.id) {
+    renderConversation();
+  }
+  void dispatchBrowserNotification({
+    body: message.approval.reason || summarizeCommandForDisplay(message.approval.command || "Pending approval"),
+    tag: `remodex-web:approval:${normalizedRequestId}`,
+    title: "Approval required",
+  });
+}
+
+function applyTurnPlanUpdatedNotification(params) {
+  const update = applyTurnPlanUpdated({
+    findChatByThreadId,
+    messageOriginForChat,
+    params,
+    threadIdByTurnId: state.threadIdByTurnId,
+  });
+  if (!update) {
+    return;
+  }
+
+  const { chat } = update;
+  persistThreadCacheForChat(chat);
+  if (selectedChat()?.id === chat.id) {
+    renderConversation();
+  }
+}
+
+function applyPlanDeltaNotification(params) {
+  const update = applyPlanDelta({
+    findChatByThreadId,
+    messageOriginForChat,
+    params,
+    threadIdByTurnId: state.threadIdByTurnId,
+  });
+  if (!update) {
+    return;
+  }
+
+  const { chat } = update;
+  persistThreadCacheForChat(chat);
+  if (selectedChat()?.id === chat.id) {
+    renderConversation();
+  }
+}
+
+function applyServerRequestResolvedNotification(params) {
+  const update = resolveServerRequestInChats({
+    findChatByThreadId,
+    flattenChats: () => flattenChats(state.conversations),
+    params,
+    threadIdByTurnId: state.threadIdByTurnId,
+  });
+  if (!update) {
+    return;
+  }
+
+  const { chat } = update;
+  persistThreadCacheForChat(chat);
+  if (selectedChat()?.id === chat.id) {
+    renderConversation();
   }
 }
 
@@ -1646,21 +1966,104 @@ async function createBranch() {
     return;
   }
 
-  const name = window.prompt("New branch name");
-  if (!name || !name.trim()) {
+  openBranchSheet();
+}
+
+async function submitBranchCreation() {
+  const chat = selectedChat();
+  if (!state.client || !chat?.cwd || !elements.branchNameInput) {
     return;
   }
 
+  const name = elements.branchNameInput.value.trim();
+  if (!name) {
+    showBranchError("Enter a branch name.");
+    return;
+  }
+
+  if (elements.branchSubmitButton) {
+    elements.branchSubmitButton.disabled = true;
+    elements.branchSubmitButton.textContent = "Creating...";
+  }
+  showBranchError("");
+
   try {
-    const result = await state.client.gitCreateBranch(chat.cwd, name.trim());
-    chat.branch = result.branch || name.trim();
+    const result = await state.client.gitCreateBranch(chat.cwd, name);
+    chat.branch = result.branch || name;
     await refreshBranchCatalog(chat);
     addLog("info", "Created git branch.", chat.branch);
+    closeBranchSheet();
     renderAll();
   } catch (error) {
-    addLog("error", error.message || "Failed to create git branch.", "git/createBranch");
+    showBranchError(error.message || "Failed to create the branch.");
+    addLog("error", error.message || "Failed to create the branch.", "git/createBranch");
     renderLogs();
+  } finally {
+    if (elements.branchSubmitButton) {
+      elements.branchSubmitButton.disabled = false;
+      elements.branchSubmitButton.textContent = "Create Branch";
+    }
   }
+}
+
+function showBranchError(message) {
+  if (elements.branchError) {
+    elements.branchError.textContent = message || "";
+  }
+}
+
+function suggestBranchName(chat) {
+  const repoPart = String(chat?.repo || "workspace")
+    .toLowerCase()
+    .replace(/[^a-z0-9]+/g, "-")
+    .replace(/^-+|-+$/g, "");
+  const branchPart = String(chat?.branch || "main")
+    .toLowerCase()
+    .replace(/[^a-z0-9]+/g, "-")
+    .replace(/^-+|-+$/g, "");
+  return `web/${repoPart || "workspace"}-${branchPart || "main"}-update`;
+}
+
+function composerStatusLabel(chat) {
+  if (chatHasBlockingServerRequest(chat)) {
+    return "Action required";
+  }
+  return state.connection.label;
+}
+
+function describeNotificationStatusCopy(notificationState) {
+  if (!notificationState.supported) {
+    return "This browser does not expose local notifications for the web shell.";
+  }
+  if (notificationState.permission === "denied") {
+    return "Notifications are blocked for this page. Re-enable them in browser site settings.";
+  }
+  if (notificationState.permission !== "granted") {
+    return "Ask for permission to receive turn-complete, approval, and plan-input alerts.";
+  }
+  return state.preferences.notifications === false
+    ? "Permission is granted, but Remodex alerts are paused for this browser shell."
+    : "Completion, approval, and plan-input alerts are enabled when the page is in the background.";
+}
+
+async function dispatchBrowserNotification({
+  body,
+  requireHidden = true,
+  tag,
+  title,
+} = {}) {
+  if (state.preferences.notifications === false) {
+    return false;
+  }
+
+  return sendBrowserNotification({
+    body,
+    navigatorLike: navigator,
+    requireHidden,
+    tag,
+    title,
+    windowLike: window,
+  });
 }
 
 function summarizeAccount(accountResult) {
@@ -1758,11 +2161,13 @@ function applyAgentDeltaNotification(params) {
 }
 
 function applyCompletedItemNotification(params) {
-  const threadId = params?.threadId;
+  const threadId = resolveThreadIdFromParams(params, state.threadIdByTurnId);
+  const turnId = resolveTurnIdFromParams(params);
   const item = params?.item;
   if (!threadId || !item?.type) {
     return;
   }
+  rememberThreadTurnMapping(state.threadIdByTurnId, threadId, turnId);
 
   const chat = findChatByThreadId(threadId);
   if (!chat) {
@@ -1819,6 +2224,22 @@ function applyCompletedItemNotification(params) {
     message.time = "completed";
   }
 
+  if (item.type === "plan") {
+    const message = ensurePlanMessage(chat, {
+      itemId: item.id,
+      messageOrigin: messageOriginForChat(chat),
+      turnId,
+    });
+    message.text = normalizePlanItemText(item) || message.text || "Plan updated.";
+    message.planState = {
+      explanation: normalizePlanExplanation(item.explanation) || message.planState?.explanation || "",
+      isStreaming: false,
+      presentation: "result",
+      steps: normalizePlanSteps(item.plan, { completeAll: params?.turn?.status === "completed" || params?.status === "completed" }),
+    };
+    message.time = "completed";
+  }
+
   persistThreadCacheForChat(chat);
   if (selectedChat()?.id === chat.id) {
     renderConversation();
@@ -1826,11 +2247,13 @@ function applyCompletedItemNotification(params) {
 }
 
 function applyStartedItemNotification(params) {
-  const threadId = params?.threadId;
+  const threadId = resolveThreadIdFromParams(params, state.threadIdByTurnId);
+  const turnId = resolveTurnIdFromParams(params);
   const item = params?.item;
   if (!threadId || !item?.type) {
     return;
   }
+  rememberThreadTurnMapping(state.threadIdByTurnId, threadId, turnId);
 
   const chat = findChatByThreadId(threadId);
   if (!chat) {
@@ -1855,6 +2278,22 @@ function applyStartedItemNotification(params) {
     const commandId = item.id || `command:${hashString(`${command}\n${item.text || item.output || item.rawOutput || ""}`)}`;
     const message = ensureCommandMessage(chat, commandId, command);
     message.preview = "Running...";
+    message.time = "running";
+  }
+
+  if (item.type === "plan") {
+    const message = ensurePlanMessage(chat, {
+      itemId: item.id,
+      messageOrigin: messageOriginForChat(chat),
+      turnId,
+    });
+    message.text = message.text || "Building the plan...";
+    message.planState = {
+      ...(message.planState || {}),
+      isStreaming: true,
+      presentation: "progress",
+      steps: message.planState?.steps || [],
+    };
     message.time = "running";
   }
 
@@ -2517,94 +2956,58 @@ function originBadgeClass(origin) {
   }
 }
 
-function renderMessageBubble(element, message) {
-  if (!element) {
-    return;
-  }
+async function submitStructuredUserInputResponse(message) {
+  const questions = message.structuredInput?.questions || [];
+  const answersByQuestionId = {};
 
-  if (message?.pending) {
-    element.classList.add("typing-bubble");
-
-    const label = document.createElement("div");
-    label.className = "typing-label";
-    label.textContent = message.text || "Waiting for response";
-
-    const indicator = document.createElement("div");
-    indicator.className = "typing-indicator";
-    indicator.innerHTML = "<span></span><span></span><span></span>";
-
-    element.replaceChildren(label, indicator);
-    return;
-  }
-
-  if (message?.kind === "command") {
-    const summaryText = message.summary || summarizeCommandForDisplay(message.command || "Command");
-    const previewText = message.preview || buildCommandPreview(message.rawOutput || message.text || "");
-    const rawContent = buildCommandRawContent(message);
-    if (!summaryText && !previewText && !rawContent) {
-      element.replaceChildren();
+  for (const question of questions) {
+    const answers = collectStructuredQuestionAnswers(question, message);
+    if (!answers.length) {
+      message.error = `Answer "${question.header || question.question}" before sending.`;
+      renderConversation();
       return;
     }
-
-    element.classList.add("command-bubble");
-
-    const summary = document.createElement("div");
-    summary.className = "command-summary";
-    summary.textContent = summaryText;
-
-    const preview = document.createElement("pre");
-    preview.className = "command-preview";
-    preview.textContent = previewText;
-
-    element.replaceChildren(summary, preview);
-
-    if (rawContent) {
-      const details = document.createElement("details");
-      details.className = "command-details";
-      const summaryLine = document.createElement("summary");
-      summaryLine.textContent = "Show Raw";
-      const rawBlock = document.createElement("pre");
-      rawBlock.textContent = rawContent;
-      details.append(summaryLine, rawBlock);
-      element.append(details);
-    }
-    return;
+    answersByQuestionId[question.id] = answers;
   }
 
-  if (message?.kind === "patch") {
-    const summaryText = message.summary || summarizePatchForDisplay(message.patch || "");
-    const previewText = message.preview || buildPatchPreview(message.patch || "");
-    if (!summaryText && !previewText) {
-      element.replaceChildren();
-      return;
-    }
+  message.error = "";
+  message.resolving = true;
+  renderConversation();
 
-    element.classList.add("patch-bubble");
-
-    const summary = document.createElement("div");
-    summary.className = "patch-summary";
-    summary.textContent = summaryText;
-
-    const preview = document.createElement("pre");
-    preview.className = "patch-preview";
-    preview.textContent = previewText;
-
-    element.replaceChildren(summary, preview);
-
-    if (message.patch) {
-      const details = document.createElement("details");
-      details.className = "patch-details";
-      details.open = true;
-      const summaryLine = document.createElement("summary");
-      summaryLine.textContent = "Show Exact Diff";
-      const diffShell = buildUnifiedDiffElement(message.patch);
-      details.append(summaryLine, diffShell);
-      element.append(details);
-    }
-    return;
+  try {
+    await state.client?.respondToServerRequest(
+      message.requestId,
+      buildStructuredUserInputResponse(answersByQuestionId)
+    );
+  } catch (error) {
+    message.error = error.message || "Could not send the answers.";
+    message.resolving = false;
+    renderConversation();
   }
+}
 
-  element.textContent = message?.text || "";
+async function submitApprovalDecision(message, decision) {
+  message.error = "";
+  message.resolving = true;
+  renderConversation();
+
+  try {
+    await state.client?.respondToServerRequest(message.requestId, {
+      decision,
+    });
+  } catch (error) {
+    message.error = error.message || "Could not send the approval decision.";
+    message.resolving = false;
+    renderConversation();
+  }
+}
+
+function collectStructuredQuestionAnswers(question, message) {
+  return Array.isArray(message.draftAnswers?.[question.id])
+    ? message.draftAnswers[question.id]
+      .map((value) => (typeof value === "string" ? value.trim() : ""))
+      .filter(Boolean)
+    : [];
 }
 
 function addLog(level, message, meta = new Date().toLocaleTimeString()) {
@@ -2638,43 +3041,6 @@ function renderUnifiedDiff(container, patch) {
   }
 
   container.replaceChildren(buildUnifiedDiffElement(patch));
-}
-
-function buildUnifiedDiffElement(patch) {
-  const normalizedPatch = String(patch || "");
-  const fragment = document.createDocumentFragment();
-  const lines = normalizedPatch.replace(/\r/g, "").split("\n");
-
-  for (const line of lines) {
-    const row = document.createElement("div");
-    row.className = `diff-line ${diffLineClass(line)}`.trim();
-    row.textContent = line || " ";
-    fragment.append(row);
-  }
-
-  const shell = document.createElement("div");
-  shell.className = "diff-lines";
-  shell.append(fragment);
-  return shell;
-}
-
-function diffLineClass(line) {
-  if (
-    line.startsWith("diff --git ")
-    || line.startsWith("@@")
-    || line.startsWith("index ")
-    || line.startsWith("--- ")
-    || line.startsWith("+++ ")
-  ) {
-    return "diff-line-meta";
-  }
-  if (line.startsWith("+")) {
-    return "diff-line-add";
-  }
-  if (line.startsWith("-")) {
-    return "diff-line-remove";
-  }
-  return "diff-line-context";
 }
 
 function buildDiffMeta({ threadId, turnId, callId, patch, loadedAt }) {
@@ -2724,41 +3090,6 @@ function summarizeDiffPatch(patch) {
   return { additions, deletions, files };
 }
 
-function summarizePatchForDisplay(patch) {
-  const summary = summarizeDiffPatch(patch);
-  const parts = [];
-  if (summary.files > 0) {
-    parts.push(`Changed ${summary.files} file${summary.files === 1 ? "" : "s"}`);
-  } else {
-    parts.push("Changed files");
-  }
-  if (summary.additions > 0 || summary.deletions > 0) {
-    parts.push(`+${summary.additions} -${summary.deletions}`);
-  }
-  return parts.join(" | ");
-}
-
-function buildPatchPreview(patch) {
-  const files = [];
-  for (const line of String(patch || "").replace(/\r/g, "").split("\n")) {
-    if (!line.startsWith("diff --git ")) {
-      continue;
-    }
-    const parts = line.trim().split(/\s+/);
-    const rawPath = parts[3] || parts[2] || "";
-    const normalized = rawPath.replace(/^[ab]\//, "");
-    if (normalized && !files.includes(normalized)) {
-      files.push(normalized);
-    }
-  }
-
-  if (files.length) {
-    return files.slice(0, 6).map((filePath) => `- ${filePath}`).join("\n");
-  }
-
-  return "Exact patch captured.";
-}
-
 function openModal(element) {
   if (!element) {
     return;
@@ -2801,7 +3132,8 @@ function closeModal(element) {
 function anyModalOpen() {
   return elements.settingsPanel.classList.contains("is-open")
     || elements.scannerModal.classList.contains("is-open")
-    || elements.diffSheet.classList.contains("is-open");
+    || elements.diffSheet.classList.contains("is-open")
+    || elements.branchSheet?.classList.contains("is-open");
 }
 
 function wireSwipeGestures() {
@@ -2995,6 +3327,12 @@ function handleGlobalKeydown(event) {
     return;
   }
 
+  if (elements.branchSheet?.classList.contains("is-open")) {
+    event.preventDefault();
+    closeBranchSheet();
+    return;
+  }
+
   if (elements.scannerModal.classList.contains("is-open")) {
     event.preventDefault();
     closeScanner();
@@ -3155,46 +3493,4 @@ function setScannerStatus(message) {
 
 function cloneConversations(value) {
   return JSON.parse(JSON.stringify(value));
-}
-
-async function cleanupLegacyAppShell() {
-  if (!("serviceWorker" in navigator)) {
-    return false;
-  }
-
-  const reloadMarker = "remodex-web.sw-cleanup-reloaded";
-  let hadLegacyRegistration = false;
-
-  try {
-    const registrations = await navigator.serviceWorker.getRegistrations();
-    const appRegistrations = registrations.filter((registration) => (
-      registration.scope.includes("/app/")
-      || registration.scope.endsWith("/app")
-    ));
-
-    hadLegacyRegistration = appRegistrations.length > 0;
-    await Promise.all(appRegistrations.map((registration) => registration.unregister()));
-  } catch {}
-
-  try {
-    if ("caches" in globalThis) {
-      const keys = await caches.keys();
-      await Promise.all(
-        keys
-          .filter((key) => key.startsWith("remodex-web-deck-"))
-          .map((key) => caches.delete(key))
-      );
-    }
-  } catch {}
-
-  try {
-    if (hadLegacyRegistration && sessionStorage.getItem(reloadMarker) !== "1") {
-      sessionStorage.setItem(reloadMarker, "1");
-      window.location.replace(window.location.href);
-      return true;
-    }
-    sessionStorage.removeItem(reloadMarker);
-  } catch {}
-
-  return false;
 }

@@ -1217,6 +1217,17 @@ h2 {
   font-family: inherit;
 }
 
+.message-card.message-kind-plan .message-bubble {
+  background: linear-gradient(180deg, rgba(236, 252, 248, 0.98), rgba(219, 249, 243, 0.94));
+  border-color: rgba(13, 148, 136, 0.18);
+}
+
+.message-card.message-kind-structured-input .message-bubble,
+.message-card.message-kind-approval .message-bubble {
+  background: linear-gradient(180deg, rgba(248, 250, 252, 0.98), rgba(241, 245, 249, 0.95));
+  border-color: rgba(15, 23, 42, 0.08);
+}
+
 .command-summary {
   font-weight: 700;
   color: var(--text);
@@ -1237,6 +1248,182 @@ h2 {
   font-size: 0.82rem;
   line-height: 1.52;
   color: #7c2d12;
+}
+
+.plan-header,
+.request-title {
+  font-size: 0.8rem;
+  font-weight: 800;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+}
+
+.plan-header {
+  color: #0f766e;
+}
+
+.plan-explanation,
+.request-copy,
+.request-question-copy {
+  margin-top: 8px;
+  color: var(--muted);
+  line-height: 1.55;
+}
+
+.plan-text,
+.approval-command {
+  margin: 12px 0 0;
+  padding: 12px 14px;
+  border-radius: 16px;
+  background: rgba(255, 255, 255, 0.78);
+  border: 1px solid rgba(15, 23, 42, 0.06);
+  white-space: pre-wrap;
+  word-break: break-word;
+  overflow-wrap: anywhere;
+  font-family: "Fira Code", "Consolas", "Cascadia Mono", monospace;
+  font-size: 0.82rem;
+  line-height: 1.55;
+}
+
+.plan-steps {
+  display: grid;
+  gap: 8px;
+  margin: 14px 0 0;
+  padding: 0;
+  list-style: none;
+}
+
+.plan-step {
+  display: grid;
+  grid-template-columns: auto minmax(0, 1fr);
+  gap: 10px;
+  align-items: start;
+  padding: 10px 12px;
+  border-radius: 16px;
+  background: rgba(255, 255, 255, 0.74);
+  border: 1px solid rgba(15, 23, 42, 0.05);
+}
+
+.plan-step-status {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  min-width: 72px;
+  min-height: 28px;
+  padding: 0 10px;
+  border-radius: 999px;
+  font-size: 0.72rem;
+  font-weight: 800;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+}
+
+.plan-step-completed .plan-step-status {
+  background: rgba(31, 157, 96, 0.14);
+  color: #1e7d50;
+}
+
+.plan-step-in_progress .plan-step-status {
+  background: rgba(13, 148, 136, 0.14);
+  color: #0f766e;
+}
+
+.plan-step-pending .plan-step-status {
+  background: rgba(148, 163, 184, 0.16);
+  color: #475569;
+}
+
+.plan-step-text {
+  min-width: 0;
+  font-weight: 600;
+  line-height: 1.5;
+}
+
+.request-shell {
+  display: grid;
+  gap: 10px;
+}
+
+.request-form {
+  display: grid;
+  gap: 14px;
+  margin-top: 4px;
+}
+
+.request-question {
+  display: grid;
+  gap: 10px;
+  margin: 0;
+  padding: 14px;
+  border: 1px solid rgba(15, 23, 42, 0.06);
+  border-radius: 18px;
+  background: rgba(255, 255, 255, 0.72);
+}
+
+.request-question-legend {
+  padding: 0;
+  font-size: 0.78rem;
+  font-weight: 800;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  color: var(--muted-strong);
+}
+
+.request-options {
+  display: grid;
+  gap: 8px;
+}
+
+.request-option {
+  display: grid;
+  grid-template-columns: auto minmax(0, 1fr);
+  gap: 10px;
+  align-items: start;
+  padding: 10px 12px;
+  border-radius: 14px;
+  background: rgba(255, 255, 255, 0.86);
+  border: 1px solid rgba(15, 23, 42, 0.06);
+}
+
+.request-option input {
+  margin-top: 2px;
+}
+
+.request-option-text {
+  font-weight: 700;
+}
+
+.request-option-description {
+  grid-column: 2;
+  color: var(--muted);
+  font-size: 0.86rem;
+  line-height: 1.45;
+}
+
+.request-custom-input {
+  width: 100%;
+  min-height: 44px;
+  padding: 10px 12px;
+  border: 1px solid rgba(15, 23, 42, 0.08);
+  border-radius: 14px;
+  background: rgba(255, 255, 255, 0.9);
+  color: var(--text);
+  resize: vertical;
+}
+
+.request-actions,
+.branch-actions {
+  display: flex;
+  gap: 10px;
+  flex-wrap: wrap;
+}
+
+.request-error,
+.branch-error {
+  min-height: 1.2rem;
+  color: #b4361d;
+  font-size: 0.9rem;
+  line-height: 1.45;
 }
 
 .patch-details {
@@ -1679,7 +1866,8 @@ h2 {
 
 .settings-sheet,
 .scanner-modal,
-.diff-sheet {
+.diff-sheet,
+.branch-sheet {
   position: fixed;
   inset: 0;
   z-index: 20;
@@ -1691,7 +1879,8 @@ h2 {
 
 .settings-sheet.is-open,
 .scanner-modal.is-open,
-.diff-sheet.is-open {
+.diff-sheet.is-open,
+.branch-sheet.is-open {
   display: block;
 }
 
@@ -1919,6 +2108,40 @@ h2 {
   -webkit-backdrop-filter: blur(22px);
 }
 
+.branch-panel {
+  position: absolute;
+  left: 50%;
+  top: 50%;
+  width: min(560px, calc(100vw - 24px));
+  transform: translate(-50%, -50%);
+  display: grid;
+  gap: 14px;
+  padding: 18px;
+  border-radius: 34px;
+  overflow: hidden;
+  background: rgba(247, 249, 252, 0.96);
+  border: 1px solid rgba(17, 24, 39, 0.06);
+  box-shadow: 0 24px 48px rgba(15, 23, 42, 0.14);
+  backdrop-filter: blur(22px);
+  -webkit-backdrop-filter: blur(22px);
+}
+
+.branch-header {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 14px;
+}
+
+.branch-header > * {
+  min-width: 0;
+}
+
+.branch-form {
+  display: grid;
+  gap: 12px;
+}
+
 .diff-header {
   display: flex;
   align-items: flex-start;
@@ -2085,7 +2308,8 @@ body.no-glass .sidebar,
 body.no-glass .conversation-shell,
 body.no-glass .settings-panel,
 body.no-glass .scanner-panel,
-body.no-glass .diff-panel {
+body.no-glass .diff-panel,
+body.no-glass .branch-panel {
   backdrop-filter: none;
   -webkit-backdrop-filter: none;
   background: var(--surface-strong);
@@ -2466,6 +2690,17 @@ body.modal-open {
     max-height: calc(100svh - 20px);
     border-radius: 28px;
   }
+
+  .branch-panel {
+    left: 10px;
+    right: 10px;
+    top: auto;
+    bottom: 10px;
+    width: auto;
+    transform: none;
+    max-height: calc(100svh - 20px);
+    border-radius: 28px;
+  }
 }
 
 @media (max-width: 640px) {
@@ -2485,6 +2720,8 @@ body.modal-open {
   .settings-actions,
   .diff-header-actions,
   .scanner-actions,
+  .request-actions,
+  .branch-actions,
   .sidebar-actions,
   .connection-buttons {
     flex-direction: column;
@@ -2628,6 +2865,18 @@ body.modal-open {
     bottom: 0;
     max-height: 100svh;
     border-radius: 0;
+    padding: max(14px, env(safe-area-inset-top)) 14px max(14px, env(safe-area-inset-bottom));
+  }
+
+  .branch-panel {
+    left: 0;
+    right: 0;
+    top: auto;
+    bottom: 0;
+    width: auto;
+    max-height: 100svh;
+    transform: none;
+    border-radius: 28px 28px 0 0;
     padding: max(14px, env(safe-area-inset-top)) 14px max(14px, env(safe-area-inset-bottom));
   }
 

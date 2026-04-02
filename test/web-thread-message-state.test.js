@@ -72,3 +72,45 @@ test("mergeMessagesWithCache preserves cached origin while updating server comma
   assert.equal(merged[0].rawOutput, "On branch main");
   assert.equal(merged[0].preview, "On branch main");
 });
+
+test("extractMessagesFromThread restores plan messages with normalized step status", async () => {
+  const { extractMessagesFromThread } = await import("../web/modules/thread-message-state.mjs");
+
+  const thread = {
+    id: "thread-plan",
+    turns: [
+      {
+        id: "turn-plan",
+        status: "completed",
+        items: [
+          {
+            id: "plan-1",
+            type: "plan",
+            explanation: "Ship the safest slice first.",
+            plan: [
+              { step: "Audit the current flow", status: "completed" },
+              { step: "Implement the web prompt cards", status: "in_progress" },
+            ],
+            content: [
+              { type: "text", text: "1. Audit\n2. Implement" },
+            ],
+          },
+        ],
+      },
+    ],
+  };
+
+  const messages = extractMessagesFromThread(thread);
+
+  assert.equal(messages.length, 1);
+  assert.equal(messages[0].kind, "plan");
+  assert.equal(messages[0].text, "1. Audit\n2. Implement");
+  assert.equal(messages[0].planState.explanation, "Ship the safest slice first.");
+  assert.deepEqual(
+    messages[0].planState.steps,
+    [
+      { step: "Audit the current flow", status: "completed" },
+      { step: "Implement the web prompt cards", status: "completed" },
+    ]
+  );
+});

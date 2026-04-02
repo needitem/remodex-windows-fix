@@ -1,5 +1,6 @@
 export function collectBrowserCapabilities(windowLike, navigatorLike) {
   const secureContext = Boolean(windowLike?.isSecureContext);
+  const notificationSupported = typeof windowLike?.Notification === "function";
   const capabilities = [
     {
       label: "Secure Context",
@@ -26,10 +27,10 @@ export function collectBrowserCapabilities(windowLike, navigatorLike) {
         : "Service Worker is unavailable in this browser.",
     },
     {
-      label: "Web Push",
-      detail: "PushManager" in windowLike
-        ? "Web Push APIs exist, but they still need a server-side subscription flow."
-        : "This browser does not expose PushManager.",
+      label: "Browser Notifications",
+      detail: notificationSupported
+        ? "Browser notifications are available for local completion and approval alerts."
+        : "This browser does not expose the Notification API.",
     },
   ];
 

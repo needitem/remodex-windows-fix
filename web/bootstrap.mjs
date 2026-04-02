@@ -1,9 +1,11 @@
-const APP_VERSION = "20260323e";
+const APP_VERSION = "20260402a";
 const CLEANUP_MARKER = `remodex-web.bootstrap-cleanup.${APP_VERSION}`;
+const CURRENT_SW_MARKER = "/app/sw.mjs";
 
 const needsReload = await cleanupLegacyAppShell();
 if (!needsReload) {
   await import(`./main.mjs?v=${APP_VERSION}`);
+  void registerAppShellServiceWorker();
 }
 
 async function cleanupLegacyAppShell() {
@@ -14,23 +16,18 @@ async function cleanupLegacyAppShell() {
   let hadLegacyRegistration = false;
   try {
     const registrations = await navigator.serviceWorker.getRegistrations();
-    const appRegistrations = registrations.filter((registration) => (
-      registration.scope.includes("/app/")
-      || registration.scope.endsWith("/app")
-    ));
+    const appRegistrations = registrations.filter((registration) => {
+      if (!(registration.scope.includes("/app/") || registration.scope.endsWith("/app"))) {
+        return false;
+      }
+      const scriptUrl = registration.active?.scriptURL
+        || registration.waiting?.scriptURL
+        || registration.installing?.scriptURL
+        || "";
+      return !scriptUrl.includes(CURRENT_SW_MARKER);
+    });
     hadLegacyRegistration = appRegistrations.length > 0;
     await Promise.all(appRegistrations.map((registration) => registration.unregister()));
-  } catch {}
-
-  try {
-    if ("caches" in globalThis) {
-      const keys = await caches.keys();
-      await Promise.all(
-        keys
-          .filter((key) => key.startsWith("remodex-web-deck-"))
-          .map((key) => caches.delete(key))
-      );
-    }
   } catch {}
 
   try {
@@ -43,4 +40,19 @@ async function cleanupLegacyAppShell() {
   } catch {}
 
   return false;
+}
+
+async function registerAppShellServiceWorker() {
+  if (!("serviceWorker" in navigator) || !window.isSecureContext) {
+    return null;
+  }
+
+  try {
+    return await navigator.serviceWorker.register(`/app/sw.mjs?v=${APP_VERSION}`, {
+      scope: "/app/",
+      updateViaCache: "none",
+    });
+  } catch {
+    return null;
+  }
 }

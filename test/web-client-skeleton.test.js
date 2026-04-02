@@ -471,6 +471,164 @@ test("browser bridge client keeps retrying after a previously ready session drop
   }
 });
 
+test("browser bridge client routes server requests with ids through onServerRequest and can answer them", async () => {
+  const storage = createMemoryStorage();
+  const macIdentity = createOkpKeyPair("ed25519");
+  const macEphemeral = createOkpKeyPair("x25519");
+  const previousWindow = globalThis.window;
+  const previousLocalStorage = globalThis.localStorage;
+  const previousWebSocket = globalThis.WebSocket;
+  const previousSetTimeout = globalThis.setTimeout;
+  const previousClearTimeout = globalThis.clearTimeout;
+
+  globalThis.window = {
+    clearTimeout: previousClearTimeout,
+    setTimeout: previousSetTimeout,
+  };
+  globalThis.localStorage = storage;
+
+  try {
+    const {
+      buildTranscriptBytes,
+      nonceForDirection,
+    } = await import(`../web/modules/browser-secure-transport.mjs?case=server-request-${Date.now()}`);
+    const { createBrowserBridgeClient } = await import(`../web/modules/browser-bridge-client.mjs?case=server-request-${Date.now()}`);
+
+    let resolveServerRequest = () => {};
+    const serverRequestPromise = new Promise((resolve) => {
+      resolveServerRequest = resolve;
+    });
+    const requestResponses = [];
+
+    const relayServer = createFakeBrowserRelayServer({
+      buildTranscriptBytes,
+      macEphemeral,
+      macIdentity,
+      nonceForDirection,
+      onRpcMessage(rpcMessage, { sendRpc, socket }) {
+        if (rpcMessage.method === "initialized") {
+          sendRpc(socket, {
+            id: "server-request-1",
+            method: "item/tool/requestUserInput",
+            params: {
+              questions: [
+                {
+                  header: "Direction",
+                  id: "direction",
+                  options: [
+                    { description: "Build the fastest version", label: "Ship now" },
+                    { description: "Use a safer rollout path", label: "Stage it" },
+                  ],
+                  question: "Which path should we take?",
+                },
+              ],
+              threadId: "thread-1",
+              turnId: "turn-1",
+            },
+          });
+          return true;
+        }
+
+        if (!rpcMessage.method && rpcMessage.id === "server-request-1") {
+          requestResponses.push(rpcMessage);
+          return true;
+        }
+
+        return false;
+      },
+      scheduleTask: previousSetTimeout,
+    });
+
+    globalThis.WebSocket = class FakeWebSocket {
+      static CONNECTING = 0;
+      static OPEN = 1;
+      static CLOSING = 2;
+      static CLOSED = 3;
+
+      constructor(url) {
+        this.url = url;
+        this.readyState = FakeWebSocket.CONNECTING;
+        this.listeners = new Map();
+
+        previousSetTimeout(() => {
+          this.readyState = FakeWebSocket.OPEN;
+          this.dispatch("open", {});
+        }, 0);
+      }
+
+      addEventListener(type, handler) {
+        const handlers = this.listeners.get(type) || [];
+        handlers.push(handler);
+        this.listeners.set(type, handlers);
+      }
+
+      send(message) {
+        relayServer.handleOutgoing(this, String(message));
+      }
+
+      close(code = 1000, reason = "") {
+        this.readyState = FakeWebSocket.CLOSED;
+        this.dispatch("close", { code, reason });
+      }
+
+      dispatch(type, event) {
+        for (const handler of this.listeners.get(type) || []) {
+          handler(event);
+        }
+      }
+    };
+
+    const client = createBrowserBridgeClient({
+      pairingPayload: {
+        sessionId: "session-1",
+        relay: "wss://relay.example/relay",
+        macDeviceId: "mac-1",
+        macIdentityPublicKey: macIdentity.publicKey,
+      },
+      onServerRequest(request) {
+        resolveServerRequest(request);
+      },
+    });
+
+    await client.connect();
+    const serverRequest = await serverRequestPromise;
+
+    assert.equal(serverRequest.method, "item/tool/requestUserInput");
+    assert.equal(serverRequest.id, "server-request-1");
+
+    await client.respondToServerRequest("server-request-1", {
+      answers: {
+        direction: {
+          answers: ["Ship now"],
+        },
+      },
+    });
+
+    await new Promise((resolve) => previousSetTimeout(resolve, 25));
+
+    assert.deepEqual(requestResponses, [
+      {
+        id: "server-request-1",
+        result: {
+          answers: {
+            direction: {
+              answers: ["Ship now"],
+            },
+          },
+        },
+      },
+    ]);
+
+    await client.disconnect();
+  } finally {
+    globalThis.window = previousWindow;
+    globalThis.localStorage = previousLocalStorage;
+    globalThis.WebSocket = previousWebSocket;
+    globalThis.setTimeout = previousSetTimeout;
+    globalThis.clearTimeout = previousClearTimeout;
+  }
+});
+
 test("mobile dock state disables interaction whenever the dock is visually suppressed", async () => {
   const { describeMobileDockState } = await import("../web/modules/mobile-dock-state.mjs");
 
@@ -790,9 +948,11 @@ function createFakeBrowserRelayServer({
   macEphemeral,
   macIdentity,
   nonceForDirection,
+  onRpcMessage,
   scheduleTask,
 }) {
   let bridgeOutboundSeq = 0;
+  let macCounter = 0;
   let clientHello = null;
   let macToPhoneKey = null;
   let phoneToMacKey = null;
@@ -896,25 +1056,32 @@ function createFakeBrowserRelayServer({
 
       const outboundPayload = decryptEnvelope(parsed, phoneToMacKey, nonceForDirection);
       const rpcMessage = JSON.parse(outboundPayload.payloadText);
+      const sendRpc = (targetSocket, rpcPayload) => {
+        targetSocket.dispatch("message", {
+          data: JSON.stringify(encryptEnvelope(
+            {
+              bridgeOutboundSeq: ++bridgeOutboundSeq,
+              payloadText: JSON.stringify(rpcPayload),
+            },
+            macToPhoneKey,
+            "mac",
+            macCounter++,
+            "session-1",
+            1,
+            nonceForDirection
+          )),
+        });
+      };
+
+      if (onRpcMessage?.(rpcMessage, { sendRpc, socket }) === true) {
+        return;
+      }
 
       if (rpcMessage.method === "initialize") {
         scheduleTask(() => {
-          socket.dispatch("message", {
-            data: JSON.stringify(encryptEnvelope(
-              {
-                bridgeOutboundSeq: ++bridgeOutboundSeq,
-                payloadText: JSON.stringify({
-                  id: rpcMessage.id,
-                  result: { ok: true },
-                }),
-              },
-              macToPhoneKey,
-              "mac",
-              0,
-              "session-1",
-              1,
-              nonceForDirection
-            )),
+          sendRpc(socket, {
+            id: rpcMessage.id,
+            result: { ok: true },
           });
         }, 0);
         return;
@@ -922,38 +1089,25 @@ function createFakeBrowserRelayServer({
 
       if (rpcMessage.method === "model/list") {
         this.modelListRequestCount += 1;
-        socket.dispatch("message", {
-          data: JSON.stringify(encryptEnvelope(
-            {
-              bridgeOutboundSeq: ++bridgeOutboundSeq,
-              payloadText: JSON.stringify({
-                id: rpcMessage.id,
-                result: {
-                  data: [
-                    {
-                      defaultReasoningEffort: "medium",
-                      displayName: "GPT-5",
-                      hidden: false,
-                      isDefault: true,
-                      model: "gpt-5",
-                      supportedReasoningEfforts: [
-                        {
-                          description: "Balanced",
-                          reasoningEffort: "medium",
-                        },
-                      ],
-                    },
-                  ],
-                },
-              }),
-            },
-            macToPhoneKey,
-            "mac",
-            1,
-            "session-1",
-            1,
-            nonceForDirection
-          )),
+        sendRpc(socket, {
+          id: rpcMessage.id,
+          result: {
+            data: [
+              {
+                defaultReasoningEffort: "medium",
+                displayName: "GPT-5",
+                hidden: false,
+                isDefault: true,
+                model: "gpt-5",
+                supportedReasoningEfforts: [
+                  {
+                    description: "Balanced",
+                    reasoningEffort: "medium",
+                  },
+                ],
+              },
+            ],
+          },
         });
       }
     },
