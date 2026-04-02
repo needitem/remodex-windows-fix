@@ -598,6 +598,8 @@ h2 {
   background: rgba(255, 255, 255, 0.58);
   text-align: left;
   box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.84);
+  content-visibility: auto;
+  contain-intrinsic-size: 112px;
 }
 
 .chat-item:hover {
@@ -1076,6 +1078,8 @@ h2 {
   min-width: 0;
   width: 100%;
   padding-left: 16px;
+  content-visibility: auto;
+  contain-intrinsic-size: 168px;
 }
 
 .message-card::before {
@@ -2393,6 +2397,11 @@ body.no-glass .branch-panel {
 body.no-glass .mobile-tab-bar {
   backdrop-filter: none;
   -webkit-backdrop-filter: none;
+}
+
+body.no-glass .chat-item-dot-live {
+  animation: none;
+  box-shadow: none;
 }
 
 body.sidebar-open {

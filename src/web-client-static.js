@@ -2,97 +2,73 @@
 // Purpose: Serves the browser client skeleton from the same origin as the relay.
 // Layer: Relay utility
 // Exports: serveWebClientRequest, resolveWebClientAsset
-// Depends on: fs, path
+// Depends on: ./web-asset-pipeline
 
-const fs = require("fs");
-const path = require("path");
+const {
+  WEB_ROOT: WEB_CLIENT_ROOT,
+  WEB_ROUTE_PREFIX,
+  buildWebAssetRecords,
+  matchesIfNoneMatch,
+  normalizeWebAssetPath,
+  normalizeWebAssetUrl,
+  pickCacheControlForWebAsset,
+} = require("./web-asset-pipeline");
 
-const WEB_ROUTE_PREFIX = "/app";
-const WEB_CLIENT_ROOT = path.resolve(__dirname, "..", "web");
-const WEB_VENDOR_ASSETS = new Map([
-  [
-    "/app/vendor/jsqr.js",
-    path.resolve(__dirname, "..", "node_modules", "jsqr", "dist", "jsQR.js"),
-  ],
-]);
-
-const CONTENT_TYPES = {
-  ".css": "text/css; charset=utf-8",
-  ".html": "text/html; charset=utf-8",
-  ".js": "text/javascript; charset=utf-8",
-  ".mjs": "text/javascript; charset=utf-8",
-  ".json": "application/json; charset=utf-8",
-  ".svg": "image/svg+xml",
-  ".webmanifest": "application/manifest+json; charset=utf-8",
-};
+const WEB_ASSETS = new Map(
+  buildWebAssetRecords().map((asset) => [asset.path, asset])
+);
 
 function serveWebClientRequest(req, res) {
-  const pathname = safePathnameFromRequest(req);
+  const requestUrl = normalizeWebAssetUrl(req);
+  const pathname = requestUrl?.pathname || "/";
   if (pathname === "/" || pathname === WEB_ROUTE_PREFIX) {
     res.writeHead(302, { location: `${WEB_ROUTE_PREFIX}/` });
     res.end();
     return true;
   }
 
-  const asset = resolveWebClientAsset(pathname);
+  const asset = resolveWebClientAsset(requestUrl);
   if (!asset) {
     return false;
   }
 
-  const body = fs.readFileSync(asset.filePath);
-  res.writeHead(200, {
-    "cache-control": "no-cache",
-    "content-length": body.length,
+  const headers = {
+    "cache-control": asset.cacheControl,
     "content-type": asset.contentType,
+    "etag": asset.etag,
+    "x-content-type-options": "nosniff",
+  };
+
+  if (matchesIfNoneMatch(req?.headers?.["if-none-match"], asset.etag)) {
+    res.writeHead(304, headers);
+    res.end();
+    return true;
+  }
+
+  res.writeHead(200, {
+    ...headers,
+    "content-length": asset.contentLength,
   });
-  res.end(body);
+  res.end(asset.body);
   return true;
 }
 
-function resolveWebClientAsset(pathname) {
+function resolveWebClientAsset(requestTarget) {
+  const requestUrl = normalizeWebAssetUrl(requestTarget);
+  const pathname = normalizeWebAssetPath(requestUrl?.pathname || "");
   if (typeof pathname !== "string" || !pathname.startsWith(`${WEB_ROUTE_PREFIX}/`)) {
     return null;
   }
 
-  const relativePath = pathname === `${WEB_ROUTE_PREFIX}/`
-    ? "index.html"
-    : pathname.slice(`${WEB_ROUTE_PREFIX}/`.length);
-  const normalizedRelativePath = path.posix.normalize(relativePath);
-  if (
-    !normalizedRelativePath
-    || normalizedRelativePath.startsWith("..")
-    || path.isAbsolute(normalizedRelativePath)
-  ) {
-    return null;
-  }
-
-  const vendorAssetPath = WEB_VENDOR_ASSETS.get(pathname);
-  const filePath = vendorAssetPath || path.resolve(WEB_CLIENT_ROOT, normalizedRelativePath);
-  if (!vendorAssetPath && !filePath.startsWith(WEB_CLIENT_ROOT + path.sep) && filePath !== WEB_CLIENT_ROOT) {
-    return null;
-  }
-
-  if (!fs.existsSync(filePath) || !fs.statSync(filePath).isFile()) {
+  const asset = WEB_ASSETS.get(pathname);
+  if (!asset) {
     return null;
   }
 
   return {
-    filePath,
-    contentType: contentTypeForPath(filePath),
+    ...asset,
+    cacheControl: pickCacheControlForWebAsset(asset, requestUrl),
   };
-}
-
-function safePathnameFromRequest(req) {
-  try {
-    return new URL(req.url || "/", "http://localhost").pathname;
-  } catch {
-    return "/";
-  }
-}
-
-function contentTypeForPath(filePath) {
-  const extension = path.extname(filePath).toLowerCase();
-  return CONTENT_TYPES[extension] || "application/octet-stream";
 }
 
 module.exports = {

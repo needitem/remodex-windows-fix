@@ -2,6 +2,7 @@ const PREFERENCES_STORAGE_KEY = "remodex-web.preferences";
 
 export function loadPreferences({
   accessOptions,
+  defaultGlass = true,
   modelOptions,
   reasoningOptions,
   speedOptions,
@@ -9,7 +10,7 @@ export function loadPreferences({
   const fallback = {
     access: "On-Request",
     font: "system",
-    glass: true,
+    glass: defaultGlass,
     model: "GPT-5.4",
     notifications: true,
     reasoning: "Extra High",
@@ -21,7 +22,7 @@ export function loadPreferences({
     return {
       access: accessOptions?.includes(parsed.access) ? parsed.access : fallback.access,
       font: parsed.font === "rounded" ? "rounded" : fallback.font,
-      glass: parsed.glass !== false,
+      glass: typeof parsed.glass === "boolean" ? parsed.glass : fallback.glass,
       model: modelOptions?.includes(parsed.model) ? parsed.model : fallback.model,
       notifications: parsed.notifications !== false,
       reasoning: reasoningOptions?.includes(parsed.reasoning) ? parsed.reasoning : fallback.reasoning,

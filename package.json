@@ -45,6 +45,7 @@
   },
   "homepage": "https://github.com/needitem/remodex-windows-fix#readme",
   "dependencies": {
+    "esbuild": "^0.27.5",
     "jsqr": "^1.4.0",
     "qrcode": "^1.5.4",
     "qrcode-terminal": "^0.12.0",

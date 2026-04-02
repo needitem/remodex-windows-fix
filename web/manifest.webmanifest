@@ -9,7 +9,7 @@
   "description": "Browser client skeleton for the Remodex relay.",
   "icons": [
     {
-      "src": "/app/icon.svg",
+      "src": "/app/icon.svg?v=__REMODEX_WEB_ASSET_VERSION__",
       "sizes": "any",
       "type": "image/svg+xml",
       "purpose": "any maskable"

@@ -1,5 +1,3 @@
-import { inferRelayBaseUrl } from "./modules/browser-relay-client.mjs";
-import { createBrowserBridgeClient } from "./modules/browser-bridge-client.mjs";
 import {
   buildMessageRenderKey,
   isScrolledNearBottom,
@@ -10,12 +8,6 @@ import {
   buildSidebarRenderModel,
   buildSidebarSelectionDelta,
 } from "./modules/sidebar-render-state.mjs";
-import {
-  describeBrowserNotificationPermission,
-  getBrowserNotificationState,
-  requestBrowserNotificationPermission,
-  sendBrowserNotification,
-} from "./modules/browser-notifications.mjs";
 import { collectBrowserCapabilities } from "./modules/capabilities.mjs";
 import { decodePairingPayloadFromFile, describePairingPayload, parsePairingPayload } from "./modules/pairing.mjs";
 import {
@@ -69,12 +61,6 @@ import {
   buildCommandRawContent,
 } from "./modules/thread-command-state.mjs";
 import {
-  buildPatchPreview,
-  renderUnifiedDiffInto,
-  renderMessageBubble,
-  summarizePatchForDisplay,
-} from "./modules/thread-message-renderer.mjs";
-import {
   adoptRemoteThreadForChat as adoptRemoteThreadForChatModel,
   hydrateChatFromThread as hydrateChatFromThreadModel,
   mergeChatWithCache as mergeChatWithCacheModel,
@@ -89,6 +75,8 @@ import {
   representativeThreadInfo as representativeThreadInfoFromCollections,
   upsertChatIntoConversations as upsertChatIntoCollections,
 } from "./modules/thread-conversation-state.mjs";
+
+const DEFAULT_GLASS_ENABLED = !shouldPreferReducedGlass(window, navigator);
 
 const state = {
   accountSummary: "Account: Unknown",
@@ -118,7 +106,13 @@ const state = {
     ],
   })),
   pairingPayload: loadStoredPairingPayload(),
-  preferences: loadPreferences({ accessOptions: ACCESS_OPTIONS, modelOptions: MODEL_OPTIONS, reasoningOptions: REASONING_OPTIONS, speedOptions: SPEED_OPTIONS }),
+  preferences: loadPreferences({
+    accessOptions: ACCESS_OPTIONS,
+    defaultGlass: DEFAULT_GLASS_ENABLED,
+    modelOptions: MODEL_OPTIONS,
+    reasoningOptions: REASONING_OPTIONS,
+    speedOptions: SPEED_OPTIONS,
+  }),
   rateLimitSummary: "Usage: Unknown",
   relayOverride: loadStoredRelayOverride(),
   searchQuery: "",
@@ -133,7 +127,11 @@ const elements = mapElements();
 let refreshTimer = 0;
 let searchRenderTimer = 0;
 let scanner = null;
+let bridgeClientModule = null;
+let bridgeClientModulePromise = null;
 const patchRefreshTimers = new Map();
+let richMessageRendererModule = null;
+let richMessageRendererPromise = null;
 const modalFocusRestore = new WeakMap();
 const swipeGesture = {
   active: false,
@@ -147,6 +145,30 @@ const swipeGesture = {
 
 void init();
 
+function shouldPreferReducedGlass(windowLike = globalThis, navigatorLike = globalThis.navigator) {
+  try {
+    if (windowLike?.matchMedia?.("(prefers-reduced-motion: reduce)")?.matches) {
+      return true;
+    }
+  } catch {}
+
+  if (navigatorLike?.connection?.saveData === true) {
+    return true;
+  }
+
+  const deviceMemory = Number(navigatorLike?.deviceMemory || 0);
+  if (Number.isFinite(deviceMemory) && deviceMemory > 0 && deviceMemory <= 4) {
+    return true;
+  }
+
+  const hardwareConcurrency = Number(navigatorLike?.hardwareConcurrency || 0);
+  if (Number.isFinite(hardwareConcurrency) && hardwareConcurrency > 0 && hardwareConcurrency <= 4) {
+    return true;
+  }
+
+  return false;
+}
+
 async function init() {
   seedLogs();
   wireEvents();
@@ -154,6 +176,120 @@ async function init() {
   if (state.pairingPayload) {
     void connectRelay({ restoreThread: true });
   }
+}
+
+async function ensureBridgeClientModule() {
+  if (bridgeClientModule) {
+    return bridgeClientModule;
+  }
+
+  if (!bridgeClientModulePromise) {
+    bridgeClientModulePromise = import("./modules/browser-bridge-client.mjs").then((module) => {
+      bridgeClientModule = module;
+      return module;
+    });
+  }
+
+  return bridgeClientModulePromise;
+}
+
+async function ensureRichMessageRenderer() {
+  if (richMessageRendererModule) {
+    return richMessageRendererModule;
+  }
+
+  if (!richMessageRendererPromise) {
+    richMessageRendererPromise = import("./modules/thread-message-renderer.mjs").then((module) => {
+      richMessageRendererModule = module;
+      return module;
+    });
+  }
+
+  return richMessageRendererPromise;
+}
+
+function inferRelayBaseUrl(locationLike) {
+  if (!locationLike?.host || !locationLike?.protocol) {
+    return "";
+  }
+
+  const socketProtocol = locationLike.protocol === "https:" ? "wss:" : "ws:";
+  return `${socketProtocol}//${locationLike.host}/relay`;
+}
+
+function getBrowserNotificationState(windowLike = globalThis, navigatorLike = globalThis.navigator) {
+  const supported = typeof windowLike?.Notification === "function";
+  return {
+    permission: supported ? windowLike.Notification.permission : "unsupported",
+    serviceWorkerSupported: Boolean(navigatorLike?.serviceWorker),
+    supported,
+  };
+}
+
+async function requestBrowserNotificationPermission(windowLike = globalThis) {
+  if (typeof windowLike?.Notification?.requestPermission !== "function") {
+    return "unsupported";
+  }
+  return windowLike.Notification.requestPermission();
+}
+
+function describeBrowserNotificationPermission(permission) {
+  switch (permission) {
+    case "granted":
+      return "Enabled";
+    case "denied":
+      return "Blocked";
+    case "default":
+      return "Not requested";
+    default:
+      return "Unavailable";
+  }
+}
+
+async function sendBrowserNotification({
+  body = "",
+  navigatorLike = globalThis.navigator,
+  requireHidden = true,
+  tag,
+  title,
+  windowLike = globalThis,
+} = {}) {
+  const notificationState = getBrowserNotificationState(windowLike, navigatorLike);
+  if (!notificationState.supported || notificationState.permission !== "granted") {
+    return false;
+  }
+
+  if (requireHidden && windowLike?.document && !windowLike.document.hidden) {
+    return false;
+  }
+
+  const iconUrl = resolveVersionedAppAssetUrl("/app/icon.svg", windowLike);
+  const options = {
+    badge: iconUrl,
+    body,
+    icon: iconUrl,
+    tag,
+  };
+
+  try {
+    const registration = await navigatorLike?.serviceWorker?.ready;
+    if (typeof registration?.showNotification === "function") {
+      await registration.showNotification(title, options);
+      return true;
+    }
+  } catch {}
+
+  try {
+    new windowLike.Notification(title, options);
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+function resolveVersionedAppAssetUrl(assetPath, windowLike = globalThis) {
+  const version = String(windowLike?.__REMODEX_APP_VERSION__ || "").trim();
+  return version ? `${assetPath}?v=${encodeURIComponent(version)}` : assetPath;
 }
 
 function mapElements() {
@@ -487,6 +623,13 @@ function renderConversation() {
 
   const previousRenderState = captureConversationRenderState(chat.id);
   syncConversationMessageCards(chat);
+  if (chatNeedsRichMessageRenderer(chat) && !richMessageRendererModule) {
+    void ensureRichMessageRenderer().then(() => {
+      if (selectedChat()?.id === chat.id) {
+        renderConversation();
+      }
+    });
+  }
 
   const lastMessage = chat.messages[chat.messages.length - 1] || null;
   if (shouldAutoScrollMessageList({
@@ -826,19 +969,166 @@ function updateMessageCard(card, message, messageId, renderKey) {
     card.dataset.messageId = messageId;
   }
 
-  if (card.__remodexRenderKey === renderKey) {
+  const rendererMode = richMessageRendererModule && messageNeedsRichRenderer(message) ? "rich" : "basic";
+  if (card.__remodexRenderKey === renderKey && card.dataset.rendererMode === rendererMode) {
     return;
   }
 
   card.__remodexRenderKey = renderKey;
+  card.dataset.rendererMode = rendererMode;
   card.innerHTML = `<div class="message-meta"><span>${escapeHTML(message.author)}</span><span>|</span><span>${escapeHTML(message.time)}</span><span class="message-origin-badge ${originBadgeClass(message.origin)}">${escapeHTML(originBadgeLabel(message.origin))}</span></div><div class="message-bubble"></div>`;
-  renderMessageBubble(card.querySelector(".message-bubble"), message, {
-    buildCommandPreview,
-    buildCommandRawContent,
-    onSubmitApproval: submitApprovalDecision,
-    onSubmitStructuredInput: submitStructuredUserInputResponse,
-    summarizeCommandForDisplay,
-  });
+  const bubble = card.querySelector(".message-bubble");
+  if (rendererMode === "rich") {
+    richMessageRendererModule.renderMessageBubble(bubble, message, {
+      buildCommandPreview,
+      buildCommandRawContent,
+      onSubmitApproval: submitApprovalDecision,
+      onSubmitStructuredInput: submitStructuredUserInputResponse,
+      summarizeCommandForDisplay,
+    });
+    return;
+  }
+
+  renderBasicMessageBubble(bubble, message);
+}
+
+function chatNeedsRichMessageRenderer(chat) {
+  return Boolean(chat?.messages?.some((message) => messageNeedsRichRenderer(message)));
+}
+
+function messageNeedsRichRenderer(message) {
+  return message?.kind === "plan"
+    || message?.kind === "structured-input"
+    || message?.kind === "approval";
+}
+
+function renderBasicMessageBubble(element, message) {
+  if (!element) {
+    return;
+  }
+
+  element.className = "message-bubble";
+
+  if (message?.pending) {
+    element.classList.add("typing-bubble");
+
+    const label = document.createElement("div");
+    label.className = "typing-label";
+    label.textContent = message.text || "Waiting for response";
+
+    const indicator = document.createElement("div");
+    indicator.className = "typing-indicator";
+    indicator.innerHTML = "<span></span><span></span><span></span>";
+
+    element.replaceChildren(label, indicator);
+    return;
+  }
+
+  if (message?.kind === "command") {
+    renderBasicCommandBubble(element, message);
+    return;
+  }
+
+  if (message?.kind === "patch") {
+    renderBasicPatchBubble(element, message);
+    return;
+  }
+
+  if (messageNeedsRichRenderer(message)) {
+    element.textContent = message.text || "Loading interactive card...";
+    return;
+  }
+
+  element.textContent = message?.text || "";
+}
+
+function renderBasicCommandBubble(element, message) {
+  const summaryText = message.summary || summarizeCommandForDisplay(message.command || "Command");
+  const previewText = message.preview || buildCommandPreview(message.rawOutput || message.text || "");
+  const rawContent = buildCommandRawContent(message);
+
+  element.classList.add("command-bubble");
+
+  const summary = document.createElement("div");
+  summary.className = "command-summary";
+  summary.textContent = summaryText;
+
+  const preview = document.createElement("pre");
+  preview.className = "command-preview";
+  preview.textContent = previewText;
+
+  element.replaceChildren(summary, preview);
+
+  if (rawContent) {
+    const details = document.createElement("details");
+    details.className = "command-details";
+    const summaryLine = document.createElement("summary");
+    summaryLine.textContent = "Show Raw";
+    const rawBlock = document.createElement("pre");
+    rawBlock.textContent = rawContent;
+    details.append(summaryLine, rawBlock);
+    element.append(details);
+  }
+}
+
+function renderBasicPatchBubble(element, message) {
+  const patch = String(message?.patch || "");
+  const summaryText = message.summary || summarizePatchForDisplayBasic(patch);
+  const previewText = message.preview || buildPatchPreviewBasic(patch);
+
+  element.classList.add("patch-bubble");
+
+  const summary = document.createElement("div");
+  summary.className = "patch-summary";
+  summary.textContent = summaryText;
+
+  const preview = document.createElement("pre");
+  preview.className = "patch-preview";
+  preview.textContent = previewText;
+
+  element.replaceChildren(summary, preview);
+}
+
+function buildPatchPreviewBasic(patch) {
+  const files = [];
+  for (const line of String(patch || "").replace(/\r/g, "").split("\n")) {
+    if (!line.startsWith("diff --git ")) {
+      continue;
+    }
+    const match = line.match(/^diff --git a\/(.+?) b\/.+$/);
+    files.push(match?.[1] || line.replace(/^diff --git\s+/, ""));
+  }
+  return files.length ? files.map((file) => `- ${file}`).join("\n") : "";
+}
+
+function summarizePatchForDisplayBasic(patch) {
+  const lines = String(patch || "").replace(/\r/g, "").split("\n");
+  let files = 0;
+  let additions = 0;
+  let deletions = 0;
+
+  for (const line of lines) {
+    if (line.startsWith("diff --git ")) {
+      files += 1;
+      continue;
+    }
+    if (line.startsWith("+++ ") || line.startsWith("--- ")) {
+      continue;
+    }
+    if (line.startsWith("+")) {
+      additions += 1;
+      continue;
+    }
+    if (line.startsWith("-")) {
+      deletions += 1;
+    }
+  }
+
+  if (!files && !additions && !deletions) {
+    return "";
+  }
+
+  return `Changed ${files} file${files === 1 ? "" : "s"} | +${additions} -${deletions}`;
 }
 
 function renderAppChrome() {
@@ -1026,6 +1316,15 @@ function renderDiffViewer() {
       turnId: state.diffViewer.turnId,
       loadedAt: state.diffViewer.loadedAt,
     });
+    if (!richMessageRendererModule) {
+      renderDiffBodyEmpty("Loading the exact diff renderer...");
+      void ensureRichMessageRenderer().then(() => {
+        if (isDiffSheetOpen()) {
+          renderDiffViewer();
+        }
+      });
+      return;
+    }
     renderUnifiedDiff(elements.diffBody, state.diffViewer.patch);
     return;
   }
@@ -1455,8 +1754,8 @@ async function syncLatestPatchForChat(chat) {
         kind: "patch",
         origin: messageOriginForChat(chat),
         patch,
-        preview: buildPatchPreview(patch),
-        summary: summarizePatchForDisplay(patch),
+        preview: buildPatchPreviewBasic(patch),
+        summary: summarizePatchForDisplayBasic(patch),
         time: timestamp,
         text: "",
       };
@@ -1466,8 +1765,8 @@ async function syncLatestPatchForChat(chat) {
       message.kind = "patch";
       message.origin = message.origin || messageOriginForChat(chat);
       message.patch = patch;
-      message.preview = buildPatchPreview(patch);
-      message.summary = summarizePatchForDisplay(patch);
+      message.preview = buildPatchPreviewBasic(patch);
+      message.summary = summarizePatchForDisplayBasic(patch);
       message.time = timestamp;
     }
 
@@ -1564,6 +1863,7 @@ async function connectRelay({ restoreThread = false } = {}) {
 
   await disconnectRelay(true);
   const relayBaseUrl = state.relayOverride || state.pairingPayload.relay || inferRelayBaseUrl(window.location);
+  const { createBrowserBridgeClient } = await ensureBridgeClientModule();
   state.client = createBrowserBridgeClient({
     pairingPayload: state.pairingPayload,
     relayBaseUrl,
@@ -3473,13 +3773,18 @@ function renderUnifiedDiff(container, patch) {
     return;
   }
 
-  const renderKey = `diff:${hashString(patch)}`;
+  if (!richMessageRendererModule) {
+    renderDiffBodyEmpty("Loading the exact diff renderer...");
+    return;
+  }
+
+  const renderKey = `diff:${hashString(patch)}:rich`;
   if (container.dataset.renderKey === renderKey) {
     return;
   }
 
   container.dataset.renderKey = renderKey;
-  renderUnifiedDiffInto(container, patch);
+  richMessageRendererModule.renderUnifiedDiffInto(container, patch);
 }
 
 function resolveDisplayPatchResult(result) {

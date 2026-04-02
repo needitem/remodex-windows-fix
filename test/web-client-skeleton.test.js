@@ -24,8 +24,39 @@ test("resolveWebClientAsset maps /app/ to the browser shell entrypoint", () => {
   const asset = resolveWebClientAsset("/app/");
 
   assert.ok(asset);
-  assert.match(asset.filePath, /web[\\\/]index\.html$/);
   assert.equal(asset.contentType, "text/html; charset=utf-8");
+  assert.equal(asset.cacheControl, "public, max-age=0, must-revalidate");
+  assert.match(asset.body, /modulepreload/);
+  assert.doesNotMatch(asset.body, /__REMODEX_WEB_ASSET_VERSION__/);
+});
+
+test("resolveWebClientAsset serves immutable caching only for the current versioned asset URL", () => {
+  const asset = resolveWebClientAsset("/app/bootstrap.mjs");
+
+  assert.ok(asset);
+  assert.equal(asset.cacheControl, "public, max-age=0, must-revalidate");
+  assert.match(asset.body, new RegExp(`"${asset.version}"`));
+  assert.match(asset.body, new RegExp(`main\\.mjs\\?v=${asset.version}`));
+  assert.doesNotMatch(asset.body, /__REMODEX_WEB_ASSET_VERSION__/);
+
+  const versionedAsset = resolveWebClientAsset(`/app/bootstrap.mjs?v=${asset.version}`);
+  assert.ok(versionedAsset);
+  assert.equal(versionedAsset.cacheControl, "public, max-age=31536000, immutable");
+});
+
+test("resolveWebClientAsset injects generated app-shell chunks into the service worker precache list", () => {
+  const asset = resolveWebClientAsset("/app/sw.mjs");
+
+  assert.ok(asset);
+  assert.doesNotMatch(asset.body, /\/app\/modules\//);
+  assert.match(asset.body, /navigationPreload/);
+  assert.match(asset.body, /preloadResponse/);
+  assert.match(asset.body, /method!==\"GET\"|method===\"GET\"/);
+  const encodedPaths = asset.body.match(/atob\("([^"]+)"\)/)?.[1];
+  assert.ok(encodedPaths);
+  const decodedPaths = JSON.parse(Buffer.from(encodedPaths, "base64").toString("utf8"));
+  assert.ok(decodedPaths.some((requestPath) => requestPath.startsWith("/app/chunks/")));
+  assert.ok(decodedPaths.includes("/app/main.mjs"));
 });
 
 test("resolveWebClientAsset blocks traversal outside the web root", () => {
@@ -40,6 +71,24 @@ test("serveWebClientRequest redirects the root path to the browser shell", () =>
   assert.equal(handled, true);
   assert.equal(res.statusCode, 302);
   assert.deepEqual(res.headers, { location: "/app/" });
+  assert.equal(res.ended, true);
+});
+
+test("serveWebClientRequest returns 304 when the asset etag matches", () => {
+  const asset = resolveWebClientAsset("/app/styles.css");
+  const res = createMockResponse();
+
+  const handled = serveWebClientRequest({
+    headers: {
+      "if-none-match": asset.etag,
+    },
+    url: `/app/styles.css?v=${asset.version}`,
+  }, res);
+
+  assert.equal(handled, true);
+  assert.equal(res.statusCode, 304);
+  assert.equal(res.headers["cache-control"], "public, max-age=31536000, immutable");
+  assert.equal(res.headers.etag, asset.etag);
   assert.equal(res.ended, true);
 });
 

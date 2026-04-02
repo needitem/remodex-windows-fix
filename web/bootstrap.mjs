@@ -1,4 +1,4 @@
-const APP_VERSION = "20260402k";
+const APP_VERSION = "__REMODEX_WEB_ASSET_VERSION__";
 const CLEANUP_MARKER = `remodex-web.bootstrap-cleanup.${APP_VERSION}`;
 const CURRENT_SW_PATH = "/app/sw.mjs";
 
@@ -6,7 +6,7 @@ globalThis.__REMODEX_APP_VERSION__ = APP_VERSION;
 
 const needsReload = await cleanupLegacyAppShell();
 if (!needsReload) {
-  await import(`./main.mjs?v=${APP_VERSION}`);
+  await import("./main.mjs");
   void registerAppShellServiceWorker();
 }
 

@@ -24,12 +24,23 @@ export default {
 
     const webAsset = WEB_ASSETS.get(url.pathname);
     if (webAsset) {
+      const headers = new Headers({
+        "cache-control": resolveWebAssetCacheControl(webAsset, url),
+        "content-type": webAsset.contentType,
+        "etag": webAsset.etag,
+        "x-content-type-options": "nosniff",
+      });
+
+      if (matchesIfNoneMatch(request.headers.get("if-none-match"), webAsset.etag)) {
+        return new Response(null, {
+          status: 304,
+          headers,
+        });
+      }
+
       return new Response(webAsset.body, {
         status: 200,
-        headers: {
-          "cache-control": webAsset.cacheControl,
-          "content-type": webAsset.contentType,
-        },
+        headers,
       });
     }
 
@@ -233,6 +244,31 @@ function normalizeMessage(message) {
   }
 
   return String(message);
+}
+
+function resolveWebAssetCacheControl(webAsset, url) {
+  return url.searchParams.get("v") === webAsset.version
+    ? webAsset.versionedCacheControl
+    : webAsset.defaultCacheControl;
+}
+
+function matchesIfNoneMatch(headerValue, etag) {
+  if (!headerValue || !etag) {
+    return false;
+  }
+
+  const normalizedValue = String(headerValue).trim();
+  if (!normalizedValue) {
+    return false;
+  }
+  if (normalizedValue === "*") {
+    return true;
+  }
+
+  return normalizedValue
+    .split(",")
+    .map((candidate) => candidate.trim())
+    .includes(etag);
 }
 
 function closeWebSocketResponse(code, reason) {

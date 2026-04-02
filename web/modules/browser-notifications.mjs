@@ -31,10 +31,11 @@ export async function sendBrowserNotification({
     return false;
   }
 
+  const iconUrl = resolveVersionedAppAssetUrl("/app/icon.svg", windowLike);
   const options = {
-    badge: "/app/icon.svg",
+    badge: iconUrl,
     body,
-    icon: "/app/icon.svg",
+    icon: iconUrl,
     tag,
   };
 
@@ -65,4 +66,9 @@ export function describeBrowserNotificationPermission(permission) {
     default:
       return "Unavailable";
   }
+}
+
+function resolveVersionedAppAssetUrl(assetPath, windowLike = globalThis) {
+  const version = String(windowLike?.__REMODEX_APP_VERSION__ || "").trim();
+  return version ? `${assetPath}?v=${encodeURIComponent(version)}` : assetPath;
 }

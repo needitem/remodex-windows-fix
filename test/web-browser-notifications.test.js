@@ -49,6 +49,7 @@ test("sendBrowserNotification prefers service worker notifications when permissi
     title: "Remodex Web",
     windowLike: {
       Notification: NotificationMock,
+      __REMODEX_APP_VERSION__: "asset-123",
       document: { hidden: true },
     },
   });
@@ -57,9 +58,9 @@ test("sendBrowserNotification prefers service worker notifications when permissi
   assert.deepEqual(delivered, [
     {
       options: {
-        badge: "/app/icon.svg",
+        badge: "/app/icon.svg?v=asset-123",
         body: "Background task finished.",
-        icon: "/app/icon.svg",
+        icon: "/app/icon.svg?v=asset-123",
         tag: "remodex-web:test",
       },
       title: "Remodex Web",
