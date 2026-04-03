@@ -114,3 +114,39 @@ test("extractMessagesFromThread restores plan messages with normalized step stat
     ]
   );
 });
+
+test("extractThreadMessageSnapshot returns only the recent tail when a limit is provided", async () => {
+  const { extractThreadMessageSnapshot } = await import("../web/modules/thread-message-state.mjs");
+
+  const thread = {
+    id: "thread-tail",
+    turns: [
+      { id: "turn-1", status: "completed", items: [{ id: "msg-1", type: "agentMessage", text: "first" }] },
+      { id: "turn-2", status: "completed", items: [{ id: "msg-2", type: "agentMessage", text: "second" }] },
+      { id: "turn-3", status: "completed", items: [{ id: "msg-3", type: "agentMessage", text: "third" }] },
+    ],
+  };
+
+  const snapshot = extractThreadMessageSnapshot(thread, { limit: 2 });
+
+  assert.equal(snapshot.truncated, true);
+  assert.deepEqual(
+    snapshot.messages.map((message) => message.text),
+    ["second", "third"]
+  );
+});
+
+test("buildMessageCollectionState tracks pending and rich message requirements", async () => {
+  const { buildMessageCollectionState } = await import("../web/modules/thread-message-state.mjs");
+
+  assert.deepEqual(
+    buildMessageCollectionState([
+      { id: "pending-1", pending: true, text: "Waiting" },
+      { id: "plan-1", kind: "plan", text: "Ship it" },
+    ]),
+    {
+      hasPendingTurn: true,
+      hasRichMessages: true,
+    }
+  );
+});

@@ -54,7 +54,7 @@ test("expandConversationWindow stops at the beginning of the thread", async () =
   const { expandConversationWindow } = await import("../web/modules/conversation-window-state.mjs");
 
   const nextStartIndex = expandConversationWindow({
-    requestedStartIndex: 30,
+    requestedStartIndex: 8,
     totalMessages: 120,
   });
 

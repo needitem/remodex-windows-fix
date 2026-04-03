@@ -1,5 +1,5 @@
-export const DEFAULT_VISIBLE_MESSAGE_COUNT = 32;
-export const MESSAGE_WINDOW_EXPAND_STEP = 48;
+export const DEFAULT_VISIBLE_MESSAGE_COUNT = 10;
+export const MESSAGE_WINDOW_EXPAND_STEP = 10;
 
 export function resolveConversationWindowState({
   defaultVisibleCount = DEFAULT_VISIBLE_MESSAGE_COUNT,

@@ -1,3 +1,9 @@
+import {
+  buildMessageCollectionState,
+  DEFAULT_THREAD_CACHE_MESSAGE_LIMIT,
+  trimMessagesToRecentWindow,
+} from "./thread-message-state.mjs";
+
 const PAIRING_STORAGE_KEY = "remodex-web-deck.pairing-payload";
 const RELAY_OVERRIDE_KEY = "remodex-web-deck.relay-override";
 const CLIENT_NOTE_STORAGE_KEY = "remodex-web-deck.client-note";
@@ -60,14 +66,14 @@ export function loadStoredThreadCache() {
   }
 
   try {
-    return JSON.parse(rawValue);
+    return normalizeStoredThreadCache(JSON.parse(rawValue));
   } catch {
     return {};
   }
 }
 
 export function saveStoredThreadCache(value) {
-  safeLocalStorageSet(THREAD_CACHE_STORAGE_KEY, JSON.stringify(value || {}));
+  safeLocalStorageSet(THREAD_CACHE_STORAGE_KEY, JSON.stringify(normalizeStoredThreadCache(value)));
 }
 
 export function loadStoredLastThreadId() {
@@ -101,4 +107,48 @@ function safeLocalStorageRemove(key) {
   try {
     globalThis.localStorage?.removeItem(key);
   } catch {}
+}
+
+function normalizeStoredThreadCache(value) {
+  if (!value || typeof value !== "object") {
+    return {};
+  }
+
+  const normalized = {};
+  for (const [threadId, entry] of Object.entries(value)) {
+    const nextEntry = normalizeStoredThreadCacheEntry(entry);
+    if (nextEntry) {
+      normalized[threadId] = nextEntry;
+    }
+  }
+  return normalized;
+}
+
+function normalizeStoredThreadCacheEntry(entry) {
+  if (!entry || typeof entry !== "object") {
+    return null;
+  }
+
+  const originalMessages = Array.isArray(entry.messages) ? entry.messages : [];
+  const messages = trimMessagesToRecentWindow(originalMessages, {
+    limit: DEFAULT_THREAD_CACHE_MESSAGE_LIMIT,
+  });
+  const derivedState = buildMessageCollectionState(messages);
+
+  return {
+    ...entry,
+    hasEarlierMessages: entry.hasEarlierMessages === true || originalMessages.length > messages.length,
+    hasPendingTurn: derivedState.hasPendingTurn,
+    hasRichMessages: derivedState.hasRichMessages,
+    loadedMessageLimit: normalizeStoredMessageLimit(entry.loadedMessageLimit, messages.length),
+    messages,
+  };
+}
+
+function normalizeStoredMessageLimit(value, messageCount) {
+  const numeric = Number(value);
+  if (Number.isFinite(numeric) && numeric > 0) {
+    return Math.max(Math.trunc(numeric), Number(messageCount) || 0);
+  }
+  return Math.max(DEFAULT_THREAD_CACHE_MESSAGE_LIMIT, Number(messageCount) || 0);
 }

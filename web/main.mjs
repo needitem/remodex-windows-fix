@@ -41,9 +41,15 @@ import {
 } from "./modules/thread-send.mjs";
 import {
   buildCommandPreview,
+  buildMessageCollectionState,
+  DEFAULT_THREAD_CACHE_MESSAGE_LIMIT,
+  DEFAULT_THREAD_MESSAGE_LOAD_LIMIT,
   mergeMessagesWithCache,
+  messageRequiresRichRenderer,
   normalizeCommandOutput,
   summarizeCommandForDisplay,
+  THREAD_MESSAGE_LOAD_INCREMENT,
+  trimMessagesToRecentWindow,
 } from "./modules/thread-message-state.mjs";
 import {
   applyPlanDelta,
@@ -744,6 +750,67 @@ function flushPendingThreadCacheWrite() {
   threadCacheWriter.flush();
 }
 
+function resolveChatMessageLoadLimit(chat, fallbackValue = DEFAULT_THREAD_MESSAGE_LOAD_LIMIT) {
+  const numeric = Number(chat?.loadedMessageLimit ?? fallbackValue);
+  if (Number.isFinite(numeric) && numeric > 0) {
+    return Math.max(1, Math.trunc(numeric));
+  }
+  return DEFAULT_THREAD_MESSAGE_LOAD_LIMIT;
+}
+
+function nextThreadMessageLoadLimit(chat) {
+  return resolveChatMessageLoadLimit(chat) + THREAD_MESSAGE_LOAD_INCREMENT;
+}
+
+function refreshChatDerivedState(chat) {
+  if (!chat || typeof chat !== "object") {
+    return {
+      hasPendingTurn: false,
+      hasRichMessages: false,
+    };
+  }
+
+  const derivedState = buildMessageCollectionState(chat.messages);
+  chat.hasPendingTurn = derivedState.hasPendingTurn;
+  chat.hasRichMessages = derivedState.hasRichMessages;
+  chat.loadedMessageLimit = Math.max(resolveChatMessageLoadLimit(chat), chat.messages?.length || 0);
+  return derivedState;
+}
+
+function trimChatMessagesInMemory(chat) {
+  if (!chat || !Array.isArray(chat.messages)) {
+    refreshChatDerivedState(chat);
+    return 0;
+  }
+
+  const messageLimit = resolveChatMessageLoadLimit(chat);
+  if (chat.messages.length <= messageLimit) {
+    refreshChatDerivedState(chat);
+    return 0;
+  }
+
+  const trimmedCount = chat.messages.length - messageLimit;
+  chat.messages = trimMessagesToRecentWindow(chat.messages, {
+    limit: messageLimit,
+  });
+  chat.hasEarlierMessages = true;
+
+  const chatId = String(chat.id || chat.threadId || "");
+  if (chatId && Number.isFinite(Number(state.messageWindowStartByChatId[chatId]))) {
+    state.messageWindowStartByChatId[chatId] = Math.max(0, Number(state.messageWindowStartByChatId[chatId]) - trimmedCount);
+  }
+
+  refreshChatDerivedState(chat);
+  return trimmedCount;
+}
+
+function preserveMessageListScrollPosition(previousScrollHeight, previousScrollTop) {
+  elements.messageList.scrollTop = Math.max(
+    0,
+    previousScrollTop + (elements.messageList.scrollHeight - previousScrollHeight)
+  );
+}
+
 function currentConversationWindow(chat) {
   const chatId = String(chat?.id || "");
   const conversationWindow = resolveConversationWindowState({
@@ -769,18 +836,42 @@ function handleMessageListScroll() {
 
   messageListScrollFrame = window.requestAnimationFrame(() => {
     messageListScrollFrame = 0;
-    maybeExpandConversationWindowFromScroll();
+    void maybeExpandConversationWindowFromScroll();
   });
 }
 
-function maybeExpandConversationWindowFromScroll() {
+async function maybeExpandConversationWindowFromScroll() {
   const chat = selectedChat();
   if (!chat || messageWindowExpansionInProgress) {
     return;
   }
 
+  if (elements.messageList.scrollTop > MESSAGE_WINDOW_AUTOLOAD_THRESHOLD_PX) {
+    return;
+  }
+
   const conversationWindow = currentConversationWindow(chat);
-  if (!conversationWindow.hiddenCount || elements.messageList.scrollTop > MESSAGE_WINDOW_AUTOLOAD_THRESHOLD_PX) {
+  if (!conversationWindow.hiddenCount) {
+    if (!chat.hasEarlierMessages || !chat.threadId || !state.client) {
+      return;
+    }
+
+    const previousScrollHeight = elements.messageList.scrollHeight;
+    const previousScrollTop = elements.messageList.scrollTop;
+    messageWindowExpansionInProgress = true;
+    try {
+      state.messageWindowStartByChatId[chat.id] = 0;
+      await readRemoteThread(chat.threadId, {
+        messageLoadLimit: nextThreadMessageLoadLimit(chat),
+        onRendered() {
+          if (selectedChat()?.id === chat.id) {
+            preserveMessageListScrollPosition(previousScrollHeight, previousScrollTop);
+          }
+        },
+      });
+    } finally {
+      messageWindowExpansionInProgress = false;
+    }
     return;
   }
 
@@ -798,7 +889,7 @@ function maybeExpandConversationWindowFromScroll() {
   try {
     state.messageWindowStartByChatId[chat.id] = nextStartIndex;
     renderConversationNow();
-    elements.messageList.scrollTop = Math.max(0, previousScrollTop + (elements.messageList.scrollHeight - previousScrollHeight));
+    preserveMessageListScrollPosition(previousScrollHeight, previousScrollTop);
   } finally {
     messageWindowExpansionInProgress = false;
   }
@@ -1128,7 +1219,7 @@ function updateMessageCard(card, message, messageId, renderKey) {
     card.dataset.messageId = messageId;
   }
 
-  const rendererMode = richMessageRendererModule && messageNeedsRichRenderer(message) ? "rich" : "basic";
+  const rendererMode = richMessageRendererModule && messageRequiresRichRenderer(message) ? "rich" : "basic";
   if (card.__remodexRenderKey === renderKey && card.dataset.rendererMode === rendererMode) {
     return;
   }
@@ -1152,13 +1243,10 @@ function updateMessageCard(card, message, messageId, renderKey) {
 }
 
 function chatNeedsRichMessageRenderer(chat) {
-  return Boolean(chat?.messages?.some((message) => messageNeedsRichRenderer(message)));
-}
-
-function messageNeedsRichRenderer(message) {
-  return message?.kind === "plan"
-    || message?.kind === "structured-input"
-    || message?.kind === "approval";
+  if (typeof chat?.hasRichMessages === "boolean") {
+    return chat.hasRichMessages;
+  }
+  return buildMessageCollectionState(chat?.messages).hasRichMessages;
 }
 
 function renderBasicMessageBubble(element, message) {
@@ -1193,7 +1281,7 @@ function renderBasicMessageBubble(element, message) {
     return;
   }
 
-  if (messageNeedsRichRenderer(message)) {
+  if (messageRequiresRichRenderer(message)) {
     element.textContent = message.text || "Loading interactive card...";
     return;
   }
@@ -1339,6 +1427,11 @@ function renderMobileDock() {
   syncFocusableRegion(elements.mobileTabBar, interactive);
 }
 
+function formatLoadedMessageCount(chat) {
+  const loadedCount = chat?.messages?.length || 0;
+  return chat?.hasEarlierMessages ? `${loadedCount}+` : String(loadedCount);
+}
+
 function renderThreadSpotlight(chat) {
   if (!chat) {
     elements.threadSpotlightKicker.textContent = "No active thread";
@@ -1362,7 +1455,7 @@ function renderThreadSpotlight(chat) {
       : `This thread is running without a local repo path in the browser shell. ${state.connection.detail}`);
   elements.threadModePill.textContent = threadModeChipLabel(messageOriginForChat(chat));
   elements.threadRuntimePill.textContent = chat.cwd ? "Local workspace" : "Cloud runtime";
-  elements.threadMessageCount.textContent = String(chat.messages?.length || 0);
+  elements.threadMessageCount.textContent = formatLoadedMessageCount(chat);
   elements.threadBranchValue.textContent = workspaceSummaryLabel(chat);
   elements.threadAccessValue.textContent = state.connection.label || "Waiting";
   elements.threadSyncValue.textContent = chatHasPendingTurn(chat) ? "Running turn" : (chat.timestamp || state.connection.label);
@@ -2285,7 +2378,10 @@ async function refreshModelCatalog() {
   renderSelects();
 }
 
-async function readRemoteThread(threadId) {
+async function readRemoteThread(threadId, {
+  messageLoadLimit,
+  onRendered,
+} = {}) {
   if (!state.client) {
     return;
   }
@@ -2294,13 +2390,18 @@ async function readRemoteThread(threadId) {
   if (!chat) {
     return;
   }
-  hydrateChatFromThread(chat, result.thread);
+  hydrateChatFromThread(chat, result.thread, {
+    messageLoadLimit,
+  });
   await refreshThreadRuntime(chat);
   renderAfterChatStateChange({
     includeDeckSummary: true,
     includeDiffViewer: true,
     includeSidebar: true,
   });
+  if (typeof onRendered === "function") {
+    onRendered(chat);
+  }
   await refreshBranchCatalog(chat);
 }
 
@@ -2731,16 +2832,18 @@ function threadToChat(thread) {
     defaultAccess: state.preferences.access,
     mergeChatWithCache,
     messageOriginForChat,
+    messageLoadLimit: state.threadCache[thread.id]?.loadedMessageLimit || DEFAULT_THREAD_MESSAGE_LOAD_LIMIT,
     repoLabelFromThread,
     relativeTimeFromUnix,
   });
 }
 
-function hydrateChatFromThread(chat, thread) {
+function hydrateChatFromThread(chat, thread, { messageLoadLimit } = {}) {
   hydrateChatFromThreadModel(chat, thread, {
     cachedMessages: state.threadCache[thread.id]?.messages || [],
     cachedWritable: state.threadCache[thread.id]?.writable === true,
     messageOriginForChat,
+    messageLoadLimit: messageLoadLimit || chat?.loadedMessageLimit || state.threadCache[thread.id]?.loadedMessageLimit || DEFAULT_THREAD_MESSAGE_LOAD_LIMIT,
     persistThreadCacheForChat,
     repoLabelFromThread,
     relativeTimeFromUnix,
@@ -3480,12 +3583,16 @@ function mergeChatWithCache(chat) {
   const cached = state.threadCache[chat.threadId || chat.id];
   const merged = mergeChatWithCacheModel(chat, cached);
   if (cached?.messages?.length) {
+    const serverMessages = isIdleThreadPlaceholderMessages(chat.messages) ? [] : chat.messages;
     merged.messages = mergeMessagesWithCache({
       threadId: chat.threadId || chat.id,
-      serverMessages: chat.messages,
+      limit: resolveChatMessageLoadLimit(merged, cached.loadedMessageLimit),
+      serverMessages,
       cachedMessages: cached.messages,
     });
   }
+  trimChatMessagesInMemory(merged);
+  refreshChatDerivedState(merged);
   return merged;
 }
 
@@ -3544,7 +3651,10 @@ function applyExecCommandEndNotification(params) {
 }
 
 function chatHasPendingTurn(chat) {
-  return Boolean(chat?.messages?.some((message) => message.pending));
+  if (typeof chat?.hasPendingTurn === "boolean") {
+    return chat.hasPendingTurn;
+  }
+  return buildMessageCollectionState(chat?.messages).hasPendingTurn;
 }
 
 function persistThreadCacheForChat(chat) {
@@ -3553,12 +3663,21 @@ function persistThreadCacheForChat(chat) {
     return;
   }
 
+  trimChatMessagesInMemory(chat);
+  refreshChatDerivedState(chat);
+
   state.threadCache[threadId] = {
     access: chat.access,
     branch: chat.branch,
     cwd: chat.cwd || null,
+    hasEarlierMessages: chat.hasEarlierMessages === true,
+    hasPendingTurn: chat.hasPendingTurn === true,
+    hasRichMessages: chat.hasRichMessages === true,
+    loadedMessageLimit: resolveChatMessageLoadLimit(chat),
     model: chat.model || null,
-    messages: chat.messages,
+    messages: trimMessagesToRecentWindow(chat.messages, {
+      limit: DEFAULT_THREAD_CACHE_MESSAGE_LIMIT,
+    }),
     originUrl: chat.originUrl || null,
     reasoning: chat.reasoning || null,
     repo: chat.repo,
@@ -3567,6 +3686,13 @@ function persistThreadCacheForChat(chat) {
     writable: chat.writable === true,
   };
   threadCacheWriter.schedule();
+}
+
+function isIdleThreadPlaceholderMessages(messages) {
+  return Array.isArray(messages)
+    && messages.length === 1
+    && typeof messages[0]?.id === "string"
+    && messages[0].id.startsWith("idle:");
 }
 
 function persistLastThreadId(threadId) {

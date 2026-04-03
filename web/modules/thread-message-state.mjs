@@ -1,84 +1,93 @@
-export function extractMessagesFromThread(thread) {
+export const DEFAULT_THREAD_MESSAGE_LOAD_LIMIT = 40;
+export const THREAD_MESSAGE_LOAD_INCREMENT = 40;
+export const DEFAULT_THREAD_CACHE_MESSAGE_LIMIT = 20;
+
+export function extractMessagesFromThread(thread, options = {}) {
+  return extractThreadMessageSnapshot(thread, options).messages;
+}
+
+export function extractThreadMessageSnapshot(thread, { limit } = {}) {
+  const turns = Array.isArray(thread?.turns) ? thread.turns : [];
+  const normalizedLimit = normalizeMessageLimit(limit);
   const messages = [];
-  for (const turn of thread.turns || []) {
-    for (const item of turn.items || []) {
-      if (item.type === "userMessage") {
-        const text = (item.content || [])
-          .filter((entry) => entry.type === "text")
-          .map((entry) => entry.text)
-          .join("\n\n");
-        if (text) {
-          messages.push({
-            id: item.id || `user:${turn.id || turn.turnId || messages.length}:${messages.length}`,
-            role: "user",
-            author: "You",
-            time: turn.status,
-            text,
-          });
-        }
-      } else if (item.type === "agentMessage") {
-        messages.push({
-          id: item.id || `assistant:${turn.id || turn.turnId || messages.length}:${messages.length}`,
-          role: "assistant",
-          author: "Codex",
-          time: item.phase || turn.status,
-          text: item.text,
-        });
-      } else if (item.type === "commandExecution") {
-        const command = typeof item.command === "string" ? item.command : "";
-        const rawOutput = normalizeCommandOutput(item.output || item.rawOutput || item.text || "");
-        messages.push({
-          id: item.id || `command:${turn.id || turn.turnId || messages.length}:${messages.length}`,
-          role: "assistant",
-          author: "Shell",
-          kind: "command",
-          time: item.status || turn.status,
-          command,
-          summary: summarizeCommandForDisplay(command || "Command"),
-          preview: buildCommandPreview(rawOutput),
-          rawOutput,
-          text: "",
-        });
-      } else if (item.type === "plan") {
-        const text = normalizePlanText(item);
-        messages.push({
-          author: "Plan",
-          id: item.id || `plan:${turn.id || turn.turnId || messages.length}:${messages.length}`,
-          kind: "plan",
-          planState: {
-            explanation: normalizePlanExplanation(item.explanation),
-            steps: normalizePlanSteps(item.plan, turn.status),
-          },
-          role: "assistant",
-          text,
-          time: turn.status === "completed" ? "completed" : "running",
-        });
-      } else if (item.type === "reasoning" && item.summary?.length) {
-        messages.push({
-          id: item.id || `reasoning:${turn.id || turn.turnId || messages.length}:${messages.length}`,
-          role: "assistant",
-          author: "Reasoning",
-          time: turn.status,
-          text: item.summary.join("\n"),
-        });
+
+  for (let turnIndex = turns.length - 1; turnIndex >= 0; turnIndex -= 1) {
+    const turn = turns[turnIndex];
+    const items = Array.isArray(turn?.items) ? turn.items : [];
+    for (let itemIndex = items.length - 1; itemIndex >= 0; itemIndex -= 1) {
+      const message = buildThreadItemMessage(items[itemIndex], turn, {
+        itemIndex,
+        turnIndex,
+      });
+      if (!message) {
+        continue;
+      }
+
+      messages.push(message);
+      if (messages.length >= normalizedLimit) {
+        return {
+          messages: messages.slice().reverse(),
+          truncated: turnIndex > 0 || itemIndex > 0,
+        };
       }
     }
   }
-  return messages.length ? messages : [{
-    id: `idle:${thread.id || "thread"}`,
-    role: "assistant",
-    author: "Codex",
-    time: "idle",
-    text: "This thread has no materialized turns yet.",
-  }];
+
+  return {
+    messages: messages.length ? messages.reverse() : [buildIdleThreadMessage(thread)],
+    truncated: false,
+  };
 }
 
-export function mergeMessagesWithCache({ threadId, serverMessages, cachedMessages = [] }) {
+export function trimMessagesToRecentWindow(messages, { limit = DEFAULT_THREAD_CACHE_MESSAGE_LIMIT } = {}) {
+  const list = Array.isArray(messages) ? messages : [];
+  const normalizedLimit = normalizeMessageLimit(limit);
+  if (!Number.isFinite(normalizedLimit) || list.length <= normalizedLimit) {
+    return list;
+  }
+  return list.slice(-normalizedLimit);
+}
+
+export function messageRequiresRichRenderer(message) {
+  return message?.kind === "plan"
+    || message?.kind === "structured-input"
+    || message?.kind === "approval";
+}
+
+export function buildMessageCollectionState(messages) {
+  const list = Array.isArray(messages) ? messages : [];
+  let hasPendingTurn = false;
+  let hasRichMessages = false;
+
+  for (const message of list) {
+    if (!hasPendingTurn && message?.pending === true) {
+      hasPendingTurn = true;
+    }
+    if (!hasRichMessages && messageRequiresRichRenderer(message)) {
+      hasRichMessages = true;
+    }
+    if (hasPendingTurn && hasRichMessages) {
+      break;
+    }
+  }
+
+  return {
+    hasPendingTurn,
+    hasRichMessages,
+  };
+}
+
+export function mergeMessagesWithCache({
+  threadId,
+  serverMessages,
+  cachedMessages = [],
+  limit,
+}) {
   if (!cachedMessages.length) {
-    return serverMessages;
+    return trimMessagesToRecentWindow(serverMessages, { limit });
   }
   if (!serverMessages.length) {
-    return cachedMessages;
+    return trimMessagesToRecentWindow(cachedMessages, { limit });
   }
 
   const merged = cachedMessages.map((message) => ({ ...message }));
@@ -118,7 +127,7 @@ export function mergeMessagesWithCache({ threadId, serverMessages, cachedMessage
     }
   }
 
-  return merged;
+  return trimMessagesToRecentWindow(merged, { limit });
 }
 
 export function threadHasInProgressTurn(thread) {
@@ -180,6 +189,107 @@ export function buildCommandPreview(rawOutput) {
   }
   const lines = normalized.split("\n").filter(Boolean);
   return truncate(lines.slice(0, 4).join("\n"), 260);
+}
+
+function buildThreadItemMessage(item, turn, { turnIndex = 0, itemIndex = 0 } = {}) {
+  if (!item || typeof item !== "object") {
+    return null;
+  }
+
+  if (item.type === "userMessage") {
+    const text = (item.content || [])
+      .filter((entry) => entry.type === "text")
+      .map((entry) => entry.text)
+      .join("\n\n");
+    if (!text) {
+      return null;
+    }
+    return {
+      id: item.id || fallbackThreadMessageId("user", turn, turnIndex, itemIndex),
+      role: "user",
+      author: "You",
+      time: turn?.status,
+      text,
+    };
+  }
+
+  if (item.type === "agentMessage") {
+    return {
+      id: item.id || fallbackThreadMessageId("assistant", turn, turnIndex, itemIndex),
+      role: "assistant",
+      author: "Codex",
+      time: item.phase || turn?.status,
+      text: item.text,
+    };
+  }
+
+  if (item.type === "commandExecution") {
+    const command = typeof item.command === "string" ? item.command : "";
+    const rawOutput = normalizeCommandOutput(item.output || item.rawOutput || item.text || "");
+    return {
+      id: item.id || fallbackThreadMessageId("command", turn, turnIndex, itemIndex),
+      role: "assistant",
+      author: "Shell",
+      kind: "command",
+      time: item.status || turn?.status,
+      command,
+      summary: summarizeCommandForDisplay(command || "Command"),
+      preview: buildCommandPreview(rawOutput),
+      rawOutput,
+      text: "",
+    };
+  }
+
+  if (item.type === "plan") {
+    const text = normalizePlanText(item);
+    return {
+      author: "Plan",
+      id: item.id || fallbackThreadMessageId("plan", turn, turnIndex, itemIndex),
+      kind: "plan",
+      planState: {
+        explanation: normalizePlanExplanation(item.explanation),
+        steps: normalizePlanSteps(item.plan, turn?.status),
+      },
+      role: "assistant",
+      text,
+      time: turn?.status === "completed" ? "completed" : "running",
+    };
+  }
+
+  if (item.type === "reasoning" && item.summary?.length) {
+    return {
+      id: item.id || fallbackThreadMessageId("reasoning", turn, turnIndex, itemIndex),
+      role: "assistant",
+      author: "Reasoning",
+      time: turn?.status,
+      text: item.summary.join("\n"),
+    };
+  }
+
+  return null;
+}
+
+function buildIdleThreadMessage(thread) {
+  return {
+    id: `idle:${thread?.id || "thread"}`,
+    role: "assistant",
+    author: "Codex",
+    time: "idle",
+    text: "This thread has no materialized turns yet.",
+  };
+}
+
+function fallbackThreadMessageId(kind, turn, turnIndex, itemIndex) {
+  const turnKey = turn?.id || turn?.turnId || `turn-${turnIndex}`;
+  return `${kind}:${turnKey}:${turnIndex}:${itemIndex}`;
+}
+
+function normalizeMessageLimit(value) {
+  const numeric = Number(value);
+  if (!Number.isFinite(numeric) || numeric <= 0) {
+    return Number.POSITIVE_INFINITY;
+  }
+  return Math.max(1, Math.trunc(numeric));
 }
 
 function messageSemanticKey(message) {
