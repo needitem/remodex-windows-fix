@@ -19,12 +19,34 @@ export function buildTurnStartParams({ chat, text, preferences }) {
   return {
     approvalPolicy: approvalPolicyForAccess(access),
     cwd: chat?.cwd || null,
-    effort: preferences?.reasoning || undefined,
+    effort: normalizeReasoningEffort(preferences?.reasoning),
     input,
     model: chat?.model || preferences?.model,
     sandbox: sandboxForAccess(access),
     threadId: chat?.threadId || null,
   };
+}
+
+function normalizeReasoningEffort(value) {
+  const normalized = typeof value === "string" ? value.trim().toLowerCase() : "";
+  switch (normalized) {
+    case "extra high":
+    case "xhigh":
+      return "xhigh";
+    case "high":
+      return "high";
+    case "balanced":
+    case "medium":
+      return "medium";
+    case "low":
+      return "low";
+    case "minimal":
+      return "minimal";
+    case "none":
+      return "none";
+    default:
+      return undefined;
+  }
 }
 
 export function approvalPolicyForAccess(access) {

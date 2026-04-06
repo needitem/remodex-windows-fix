@@ -1,62 +1,204 @@
 # remodex-windows-fix
 
-Windows-friendly mirror of `remodex` with a launcher fix for `codex app-server`.
+Windows에서 `remodex up` 실행 시 `spawn codex ENOENT`로 죽는 문제를 막기 위해 만든 Remodex 호환 포크입니다.
 
-## What Changed
+핵심은 단순합니다.
 
-- Fixes Windows startup when `remodex up` tries to spawn `codex` and fails with `spawn codex ENOENT`.
-- Prefers `codex.cmd` or `codex.bat` on Windows and runs them with shell support.
-- Falls back to `codex.exe` when a wrapper script is not present.
-- Adds `REMODEX_CODEX_BIN` and `PHODEX_CODEX_BIN` overrides for explicit Codex binary selection.
-- Prevents immediate uncaught startup crashes by routing launcher failures through Remodex error handling.
+- Windows에서 `codex.cmd` / `codex.bat` / `codex.exe`를 안전하게 찾아서 실행합니다.
+- 로컬 relay, pairing QR/JSON, browser client(`/app/`) 흐름을 그대로 유지합니다.
+- `codex app-server`와 실제로 붙여서 원격 요청을 보내고 응답을 받을 수 있습니다.
 
-## Why This Exists
+## 실제 운용 캡처
 
-On Windows, `codex` is often installed through npm as a `.cmd` shim. A plain Node `spawn("codex", ["app-server"])` call can fail even when `codex` works in PowerShell. This fork resolves the executable explicitly before launching the bridge.
+아래 이미지는 `2026-04-06` 기준 실제 로컬 실행 화면입니다.
 
-## Install
+- relay를 백그라운드에서 실행
+- bridge를 `codex app-server`에 연결
+- browser client를 `/app/`으로 접속
+- pairing JSON을 로드
+- 실제 요청 전송
+- 실제 응답 수신
 
-Install from npm:
+실제 데모에서 사용한 요청:
+
+```text
+Reply with exactly README_DEMO_OK and nothing else.
+```
+
+실제 데모에서 받은 응답:
+
+```text
+README_DEMO_OK
+```
+
+### 1. Pairing JSON이 로드된 상태
+
+<p align="center">
+  <img src="./artifacts/readme-demo/screenshots/01-pairing-ready.png" width="960" alt="Pairing JSON loaded in settings">
+</p>
+
+이 단계에서 확인할 것:
+
+- `Relay Base URL`이 맞는지
+- `Pairing Payload`가 들어왔는지
+- `sessionId`와 `macDeviceId`가 채워졌는지
+
+### 2. 연결 완료 후 프롬프트를 입력하는 화면
+
+<p align="center">
+  <img src="./artifacts/readme-demo/screenshots/03-compose-request.png" width="960" alt="Compose request in browser client">
+</p>
+
+이 단계에서 할 일:
+
+- 좌측 하단 `Connection` 상태가 `Ready`인지 확인
+- 프롬프트를 작성
+- `Send` 클릭
+
+### 3. 실제 turn이 올라간 상태
+
+<p align="center">
+  <img src="./artifacts/readme-demo/screenshots/04-turn-running.png" width="960" alt="Turn running in browser client">
+</p>
+
+이 화면에서는:
+
+- 좌측 하단 연결 카드가 `Running turn`
+- 우측 하단 버튼 상태도 `Running...`
+- bridge가 이미 실제 요청을 Codex 쪽으로 전달한 상태
+
+### 4. 메시지 영역만 잘라서 본 요청/응답 흐름
+
+<table>
+  <tr>
+    <td align="center">
+      <img src="./artifacts/readme-demo/screenshots/07-message-running-mid.png" width="420" alt="Request appended to thread">
+    </td>
+    <td align="center">
+      <img src="./artifacts/readme-demo/screenshots/08-message-complete-low.png" width="420" alt="Final response received">
+    </td>
+  </tr>
+  <tr>
+    <td align="center"><strong>요청이 thread에 들어간 직후</strong></td>
+    <td align="center"><strong>최종 응답 수신 완료</strong></td>
+  </tr>
+</table>
+
+왼쪽은 실제 요청이 thread에 append된 상태이고, 오른쪽은 실제 응답 `README_DEMO_OK`가 도착한 상태입니다.
+
+## 빠른 시작
+
+### 1. 설치
 
 ```bash
 npm install -g remodex-windows-fix
 ```
 
-Global CLI command:
+CLI 명령:
 
 ```bash
 remodex-windows-fix
 ```
 
-The iPhone app is available on the [App Store](https://apps.apple.com/us/app/remodex-remote-ai-coding/id6760243963).
+iPhone 앱은 App Store에서 받을 수 있습니다.
 
-## Usage
+- [Remodex Remote AI Coding](https://apps.apple.com/us/app/remodex-remote-ai-coding/id6760243963)
 
-Start the bridge:
+### 2. 가장 빠른 로컬 실행
+
+터미널 A:
+
+```bash
+npm run relay
+```
+
+터미널 B:
+
+```powershell
+$env:REMODEX_RELAY = "ws://127.0.0.1:9000/relay"
+$env:REMODEX_REFRESH_ENABLED = "false"
+remodex-windows-fix up
+```
+
+브라우저:
+
+```text
+http://127.0.0.1:9000/app/
+```
+
+포트 `9000`이 이미 사용 중이면 relay를 다른 포트로 띄우면 됩니다.
+
+예:
+
+```bash
+remodex-relay 9011
+```
+
+그 다음:
+
+- 브라우저에서 `/app/` 접속
+- `Settings` 또는 `Scan QR`로 pairing 정보 로드
+- `Connect`
+- 기존 thread 선택 또는 `+ New Thread`
+- 프롬프트 입력 후 `Send`
+
+### 3. pairing 산출물 위치
+
+bridge를 띄우면 기본적으로 아래 파일이 생성됩니다.
+
+```text
+%USERPROFILE%\.remodex\pairing-qr.png
+%USERPROFILE%\.remodex\pairing-qr.json
+```
+
+QR 대신 JSON을 바로 브라우저에 넣어도 됩니다.
+
+### 4. QR를 새로 강제로 띄우고 싶을 때
+
+```bat
+run-clean-qr.bat
+```
+
+이 스크립트는:
+
+- 기존 bridge 정리
+- pairing 상태 초기화
+- 새 bridge 실행
+- 새 QR PNG 자동 오픈
+
+relay URL을 직접 넘길 수도 있습니다.
+
+```bat
+run-clean-qr.bat wss://YOUR-RELAY/relay
+```
+
+## 자주 쓰는 명령어
+
+bridge 실행:
 
 ```bash
 remodex-windows-fix up
 ```
 
-Reset the saved pairing state and force a brand new QR:
+pairing 초기화:
 
 ```bash
 remodex-windows-fix reset-pairing
 ```
 
-Resume the last active thread:
+마지막 active thread 다시 열기:
 
 ```bash
 remodex-windows-fix resume
 ```
 
-Watch rollout output:
+rollout 보기:
 
 ```bash
 remodex-windows-fix watch [threadId]
 ```
 
-macOS service commands inherited from upstream:
+macOS 전용 service 명령:
 
 ```bash
 remodex-windows-fix start
@@ -65,73 +207,34 @@ remodex-windows-fix stop
 remodex-windows-fix status
 ```
 
-Get a fresh QR on Windows without stale pairing state:
+## Windows에서 실제로 바뀐 점
 
-```bat
-run-clean-qr.bat
-```
+- `codex` 호출 시 Windows shim(`.cmd`, `.bat`)을 우선 탐색
+- wrapper script가 없으면 `codex.exe`로 fallback
+- shell 지원으로 Windows spawn 실패를 회피
+- launcher 실패를 즉시 crash로 끝내지 않고 Remodex 오류 흐름으로 전달
 
-This helper:
-
-- stops any existing `remodex-windows-fix` bridge process
-- runs `reset-pairing`
-- starts a fresh bridge in a new PowerShell window
-- waits for `C:\Users\%USERNAME%\.remodex\pairing-qr.png` and opens it automatically
-
-It defaults to:
-
-```text
-wss://remodex-relay.th07290828.workers.dev/relay
-```
-
-You can also pass a custom relay URL:
-
-```bat
-run-clean-qr.bat wss://YOUR-RELAY/relay
-```
-
-## Pairing Behavior
-
-The bridge now keeps a stable saved relay session id, so you only need to scan the QR once per paired iPhone in normal use.
-
-After the first QR pairing:
-
-- you can stop and start `remodex-windows-fix up` again
-- the same trusted client can reconnect without rescanning
-- you can bootstrap an additional trusted browser client with a fresh QR
-- you do not need a fresh QR unless you intentionally reset pairing
-
-Use `remodex-windows-fix reset-pairing` when you want to:
-
-- pair a different iPhone
-- discard the saved trust/session state
-- force a brand new QR bootstrap
-
-## Windows Override
-
-If you want to force a specific Codex binary, set one of these environment variables before running `remodex up`:
+원하면 특정 Codex 바이너리를 강제로 지정할 수 있습니다.
 
 ```powershell
-$env:REMODEX_CODEX_BIN = "C:\Users\th072\AppData\Roaming\npm\codex.cmd"
+$env:REMODEX_CODEX_BIN = "C:\Users\YOUR_USER\AppData\Roaming\npm\codex.cmd"
 ```
 
-Legacy alias:
+레거시 별칭:
 
 ```powershell
-$env:PHODEX_CODEX_BIN = "C:\Users\th072\AppData\Roaming\npm\codex.cmd"
+$env:PHODEX_CODEX_BIN = "C:\Users\YOUR_USER\AppData\Roaming\npm\codex.cmd"
 ```
 
-## Self-Hosted Relay
+## Relay 선택지
 
-This repository now includes the upstream-compatible relay code and a local runner.
-
-Start your own relay:
+### 로컬 relay
 
 ```bash
 npm run relay
 ```
 
-Or use the bundled binary directly:
+또는:
 
 ```bash
 remodex-relay
@@ -143,123 +246,34 @@ Docker Compose:
 docker compose up -d
 ```
 
-Browser client skeleton:
+### Cloudflare Workers
 
-```text
-http://YOUR_HOST:9000/app/
-```
+Cloudflare Worker relay도 같이 들어 있습니다.
 
-The Node relay now serves a PWA shell at `/app/` so you can start building a browser-based client on the same origin as the relay.
-Current scope:
+- Worker 코드: [`cloudflare/worker.mjs`](./cloudflare/worker.mjs)
+- 설정: [`wrangler.toml`](./wrangler.toml)
 
-- imports pairing JSON directly
-- attempts QR image decoding through `BarcodeDetector` when the browser supports it
-- opens a browser WebSocket as `role=iphone`
-- persists relay/pairing state locally
-
-Current limitation:
-
-- the browser secure pairing handshake (`clientHello` / `clientAuth` / encrypted envelopes) is scaffolded in the UI only and is not implemented yet
-
-Optional relay host/port overrides:
-
-```powershell
-$env:REMODEX_RELAY_HOST = "0.0.0.0"
-$env:REMODEX_RELAY_PORT = "9000"
-```
-
-Optional relay hardening overrides:
-
-```powershell
-$env:REMODEX_TRUST_PROXY = "true"
-$env:REMODEX_RELAY_EXPOSE_DETAILED_HEALTH = "true"
-$env:REMODEX_RELAY_UPGRADE_WINDOW_MS = "60000"
-$env:REMODEX_RELAY_UPGRADE_MAX_PER_WINDOW = "60"
-```
-
-Point the bridge at your relay:
-
-```powershell
-$env:REMODEX_RELAY = "ws://YOUR_HOST:9000/relay"
-remodex-windows-fix up
-```
-
-For TLS/reverse-proxy setups, use the public `wss://YOUR_DOMAIN/relay` URL instead.
-
-Health endpoint:
-
-```text
-GET /health
-```
-
-By default the relay returns a minimal health payload. Set `REMODEX_RELAY_EXPOSE_DETAILED_HEALTH=true`
-if you want `/health` to include session counters for monitoring.
-
-## Cloudflare Deploy
-
-This repository also includes a Cloudflare Workers relay implementation in [cloudflare/worker.mjs](cloudflare/worker.mjs) with Durable Objects configured in [wrangler.toml](wrangler.toml).
-
-GitHub itself still does not host persistent WebSocket servers, but Cloudflare Workers can deploy this relay directly from your GitHub repository without running anything locally.
-
-The Worker also accepts browser `iphone` clients through `?role=iphone`, which is necessary because browser WebSockets cannot send the `x-role` header.
-
-The same Worker deployment now also serves the browser client shell at:
-
-```text
-https://YOUR-WORKER.YOUR-SUBDOMAIN.workers.dev/app/
-```
-
-Import this repository in Cloudflare:
-
-1. Open Cloudflare Workers & Pages.
-2. Create or import a Worker from your GitHub repository.
-3. Use the worker name `remodex-relay` so it matches [wrangler.toml](wrangler.toml).
-4. Deploy the repository as-is.
-5. After deploy, use the public Worker URL as the relay base:
+배포 후 bridge는 이렇게 붙이면 됩니다.
 
 ```powershell
 $env:REMODEX_RELAY = "wss://YOUR-WORKER.YOUR-SUBDOMAIN.workers.dev/relay"
 remodex-windows-fix up
 ```
 
-Current deployed example for this repository:
-
-```powershell
-$env:REMODEX_RELAY = "wss://remodex-relay.th07290828.workers.dev/relay"
-remodex-windows-fix up
-```
-
-If you are using `cmd.exe` instead of PowerShell:
-
-```cmd
-set REMODEX_RELAY=wss://remodex-relay.th07290828.workers.dev/relay
-remodex-windows-fix up
-```
-
-Health check:
+health check:
 
 ```text
-https://remodex-relay.th07290828.workers.dev/health
+https://YOUR-WORKER.YOUR-SUBDOMAIN.workers.dev/health
 ```
 
-Cloudflare health endpoint:
-
-```text
-GET /health
-```
-
-## Alternative GitHub Deploy
-
-If you prefer a normal Node web service instead of Workers, this repository still includes the Render-compatible runner in [render.yaml](render.yaml).
+### Render 등 일반 Node 서비스
 
 ```powershell
 $env:REMODEX_RELAY = "wss://YOUR-SERVICE.onrender.com/relay"
 remodex-windows-fix up
 ```
 
-## Validation
-
-Typical local verification:
+## 검증용 최소 체크
 
 ```bash
 codex --version
@@ -267,26 +281,33 @@ codex app-server --help
 remodex-windows-fix up
 ```
 
-Expected Windows resolution after the fix:
+정상적인 Windows 실행이면 결국 `codex app-server`가 실제로 떠야 합니다.
 
-```text
-C:\Users\th072\AppData\Roaming\npm\codex.cmd app-server
-```
-
-## Project Layout
+## 프로젝트 구조
 
 ```text
 bin/
 cloudflare/
-compose.yaml
-Dockerfile
 relay/
 src/
 web/
-wrangler.toml
+artifacts/readme-demo/screenshots/
+compose.yaml
+Dockerfile
 package.json
+wrangler.toml
 ```
 
-## Attribution
+## 요약
 
-This repository preserves the upstream Remodex package structure and credits the original package author in `package.json`. This fork adds a Windows launcher compatibility patch and accompanying documentation.
+이 저장소는 Windows에서 Remodex bridge를 안정적으로 띄우는 포크이고, 지금 README는 기능 설명보다 실제 사용 흐름이 먼저 보이도록 정리되어 있습니다.
+
+즉, 이 순서만 기억하면 됩니다.
+
+1. relay 실행
+2. bridge 실행
+3. QR 또는 pairing JSON 로드
+4. browser client 연결
+5. thread 열기
+6. 요청 전송
+7. 응답 확인

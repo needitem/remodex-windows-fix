@@ -1629,7 +1629,16 @@ async function createChat(folderName = selectedChat()?.repo || state.conversatio
     draftChat.writable = true;
     persistThreadCacheForChat(draftChat);
     addLog("info", "Started a new remote thread.", draftChat.id);
-    await refreshThreadList(draftChat.threadId);
+    try {
+      await refreshThreadList(draftChat.threadId);
+    } catch (error) {
+      addLog(
+        "warn",
+        "Started the remote thread, but the first thread sync is still pending.",
+        error.message || "thread/read"
+      );
+      renderLogs();
+    }
     return findChatByThreadId(draftChat.threadId) || draftChat;
   } catch (error) {
     addLog("warn", "Fell back to a local draft because thread/start failed.", error.message || "thread/start");
@@ -1728,14 +1737,32 @@ async function sendMessage() {
       adoptRemoteThreadForChat(chat, threadResponse.thread);
       chat.writable = true;
       persistThreadCacheForChat(chat);
-      await refreshThreadList(chat.threadId);
+      try {
+        await refreshThreadList(chat.threadId);
+      } catch (error) {
+        addLog(
+          "warn",
+          "Started the remote thread, but the thread list has not caught up yet.",
+          error.message || "thread/read"
+        );
+        renderLogs();
+      }
     } else if (shouldForkThreadForSend(chat, state.bridgeActiveThreadId)) {
       const forkResponse = await state.client.forkThread(buildThreadForkParams(chat));
       adoptRemoteThreadForChat(chat, forkResponse.thread);
       chat.writable = true;
       persistThreadCacheForChat(chat);
       addLog("info", "Forked shared thread into an isolated web thread.", chat.id);
-      await refreshThreadList(chat.threadId);
+      try {
+        await refreshThreadList(chat.threadId);
+      } catch (error) {
+        addLog(
+          "warn",
+          "Forked the thread, but the thread list has not caught up yet.",
+          error.message || "thread/read"
+        );
+        renderLogs();
+      }
     }
 
     addLog("info", "Started a real remote turn.", truncate(text, 42));
